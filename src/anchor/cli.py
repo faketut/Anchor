@@ -1,16 +1,20 @@
 """Click-based CLI: capture, list, show, compare, feedback, history, blind-spots."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 import click
 from rich.console import Console
+from rich.json import JSON
 from rich.table import Table
 
 from . import agent
 from .models import Scope
 
 console = Console()
+
+LLM_PROVIDERS = ["qwen", "gemini", "splunk"]
 
 
 def _parse_dt(value: str) -> datetime:
@@ -21,6 +25,37 @@ def _parse_dt(value: str) -> datetime:
         except ValueError:
             continue
     raise click.BadParameter(f"Could not parse datetime: {value}")
+
+
+def _apply_llm_override(llm: str | None) -> None:
+    """Override ANCHOR_LLM for this process. Must run BEFORE importing config consumers."""
+    if not llm:
+        return
+    os.environ["ANCHOR_LLM"] = llm
+    # Reload CONFIG so downstream picks up the new value
+    from . import config as _cfg
+    _cfg.CONFIG = _cfg.Config()
+
+
+def _resolve_anchor_id(prefix: str) -> str:
+    """Accept full UUID or unique short prefix; return full id or raise."""
+    matches = [a for a in agent.all_anchors() if a.id.startswith(prefix)]
+    if not matches:
+        raise click.BadParameter(f"No anchor matching id '{prefix}'")
+    if len(matches) > 1:
+        ids = ", ".join(m.id[:12] for m in matches)
+        raise click.BadParameter(f"Ambiguous anchor prefix '{prefix}' matches: {ids}")
+    return matches[0].id
+
+
+def _resolve_drift_id(prefix: str) -> str:
+    matches = [d for d in agent.list_history(limit=500) if d.id.startswith(prefix)]
+    if not matches:
+        raise click.BadParameter(f"No drift record matching id '{prefix}'")
+    if len(matches) > 1:
+        ids = ", ".join(m.id[:12] for m in matches)
+        raise click.BadParameter(f"Ambiguous drift prefix '{prefix}' matches: {ids}")
+    return matches[0].id
 
 
 @click.group()
@@ -74,19 +109,104 @@ def list_anchors_cmd() -> None:
     console.print(t)
 
 
+@cli.command("show")
+@click.argument("anchor_id")
+@click.option("--raw", is_flag=True, help="Print the full fingerprint as JSON.")
+@click.option("--top", default=10, type=int, help="How many top patterns/hosts to show.")
+def show_anchor_cmd(anchor_id: str, raw: bool, top: int) -> None:
+    """Show a saved anchor's fingerprint. ANCHOR_ID may be a full id or a unique prefix."""
+    full_id = _resolve_anchor_id(anchor_id)
+    anchor = next(a for a in agent.all_anchors() if a.id == full_id)
+
+    if raw:
+        console.print(JSON(anchor.model_dump_json(indent=2)))
+        return
+
+    fp = anchor.fingerprint
+    console.rule(f"[bold]{anchor.name}[/bold] [dim]({anchor.id})[/dim]")
+    console.print(
+        f"  window:     {anchor.time_range.start:%Y-%m-%d %H:%M} → "
+        f"{anchor.time_range.end:%Y-%m-%d %H:%M}"
+    )
+    console.print(f"  created:    {anchor.created_at:%Y-%m-%d %H:%M} by {anchor.created_by}")
+    console.print(f"  scope:      indexes={anchor.scope.indexes} sourcetypes={anchor.scope.sourcetypes or '*'}")
+    console.print(
+        f"  totals:     events={fp.event_volume.get('total', 0)} "
+        f"templates={len(fp.log_patterns)} metrics={len(fp.key_metrics)} "
+        f"hosts={len(fp.top_hosts)}\n"
+    )
+
+    # Volume per sourcetype
+    per_src = fp.event_volume.get("per_source", {})
+    if per_src:
+        t = Table(title="Volume per sourcetype")
+        t.add_column("sourcetype")
+        t.add_column("count", justify="right")
+        for src, n in sorted(per_src.items(), key=lambda x: -x[1]):
+            t.add_row(src, f"{n:,}")
+        console.print(t)
+
+    # Top templates
+    if fp.log_patterns:
+        t = Table(title=f"Top {min(top, len(fp.log_patterns))} log templates")
+        t.add_column("freq %", justify="right")
+        t.add_column("count", justify="right")
+        t.add_column("sourcetype")
+        t.add_column("example", overflow="fold")
+        for p in fp.log_patterns[:top]:
+            t.add_row(f"{p.frequency_pct:.2f}", f"{p.count:,}", p.sourcetype, p.example_raw[:80])
+        console.print(t)
+
+    # Error rates
+    if fp.error_rates:
+        t = Table(title="Error rates")
+        t.add_column("sourcetype")
+        t.add_column("errors", justify="right")
+        t.add_column("warns", justify="right")
+        t.add_column("total", justify="right")
+        for src, e in fp.error_rates.items():
+            t.add_row(src, str(e["error_count"]), str(e["warn_count"]), str(e["total"]))
+        console.print(t)
+
+    # Metrics
+    if fp.key_metrics:
+        t = Table(title="Key metrics")
+        t.add_column("metric")
+        t.add_column("p50", justify="right")
+        t.add_column("p95", justify="right")
+        t.add_column("p99", justify="right")
+        t.add_column("mean", justify="right")
+        t.add_column("stddev", justify="right")
+        for name, m in fp.key_metrics.items():
+            t.add_row(name, f"{m.p50:.2f}", f"{m.p95:.2f}", f"{m.p99:.2f}", f"{m.mean:.2f}", f"{m.stddev:.2f}")
+        console.print(t)
+
+    # Top hosts
+    if fp.top_hosts:
+        t = Table(title=f"Top {min(top, len(fp.top_hosts))} hosts")
+        t.add_column("host")
+        t.add_column("events", justify="right")
+        for h in fp.top_hosts[:top]:
+            t.add_row(h.get("host", ""), f"{h.get('event_count', 0):,}")
+        console.print(t)
+
+
 # ---- COMPARE ---------------------------------------------------------------
 
 
 @cli.command()
-@click.option("--anchor", "anchor_id", default=None, help="Anchor id (default: latest).")
+@click.option("--anchor", "anchor_id", default=None, help="Anchor id or unique prefix (default: latest).")
 @click.option("--from", "start", required=True, type=str, help="Compare window start (ISO 8601).")
 @click.option("--to", "end", required=True, type=str, help="Compare window end (ISO 8601).")
 @click.option("--focus", default=None, help="Optional natural-language focus hint.")
 @click.option("--metric", "metrics", multiple=True, default=(), help="Override metrics (default: anchor's).")
-def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metrics: tuple) -> None:
+@click.option("--llm", type=click.Choice(LLM_PROVIDERS), default=None, help="Override ANCHOR_LLM provider for this call.")
+def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metrics: tuple, llm: str | None) -> None:
     """Compare a time window against an anchor and narrate the drift."""
+    _apply_llm_override(llm)
+    resolved_id = _resolve_anchor_id(anchor_id) if anchor_id else None
     result = agent.compare(
-        anchor_id, _parse_dt(start), _parse_dt(end), focus=focus, metric_fields=list(metrics) or None
+        resolved_id, _parse_dt(start), _parse_dt(end), focus=focus, metric_fields=list(metrics) or None
     )
 
     console.rule(f"[bold]Drift report[/bold] — anchor '{result.anchor.name}' [dim]({result.drift.id})[/dim]")
@@ -136,9 +256,10 @@ def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metr
 @click.option("--reason", default=None, help="Free-text explanation (optional).")
 def feedback(drift_id: str, outcome: str, reason: str | None) -> None:
     """Record outcome for a drift report; updates signal weights."""
-    updated = agent.submit_feedback(drift_id, outcome, reason)  # type: ignore[arg-type]
+    full_id = _resolve_drift_id(drift_id)
+    updated = agent.submit_feedback(full_id, outcome, reason)  # type: ignore[arg-type]
     console.print(
-        f"[green]Recorded[/green] outcome=[bold]{updated.outcome}[/bold] for drift {drift_id[:8]}."
+        f"[green]Recorded[/green] outcome=[bold]{updated.outcome}[/bold] for drift {full_id[:8]}."
         + (f" reason: {updated.engineer_confirmed_reason}" if updated.engineer_confirmed_reason else "")
     )
 
