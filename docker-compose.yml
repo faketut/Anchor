@@ -21,8 +21,10 @@ services:
       # splunk-ansible's chown step on Docker Desktop (Windows/macOS).
       # Install it after the container is healthy:
       #   docker cp splunk/collections.conf anchor-splunk:/opt/splunk/etc/apps/search/local/collections.conf
-      #   docker exec -u root anchor-splunk chown splunk:splunk /opt/splunk/etc/apps/search/local/collections.conf
-      #   docker exec anchor-splunk /opt/splunk/bin/splunk restart
+      #   docker exec -u root   anchor-splunk chown splunk:splunk /opt/splunk/etc/apps/search/local/collections.conf
+      #   docker exec -u splunk anchor-splunk /opt/splunk/bin/splunk restart
+      # All other `splunk` CLI calls must also use `-u splunk` (root cannot
+      # write to splunk-owned paths; this matters on Docker Desktop).
       # Mount seed-data dir so `splunk add oneshot` can reach it from inside the container
       - ./examples/data:/seed:ro
     healthcheck:

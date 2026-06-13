@@ -102,10 +102,12 @@ cp .env.example .env                  # fill in Qwen or Gemini API key
 ```bash
 python examples/seed_data.py          # writes examples/data/{healthy,drifted}.log
 
-docker exec anchor-splunk /opt/splunk/bin/splunk add oneshot /seed/healthy.log \
-  -index main -sourcetype _json -auth admin:Anchor!Demo2026
-docker exec anchor-splunk /opt/splunk/bin/splunk add oneshot /seed/drifted.log \
-  -index main -sourcetype _json -auth admin:Anchor!Demo2026
+# Note: -u splunk is required — docker exec defaults to root, which cannot
+# write to splunk-owned paths inside the container (esp. on Docker Desktop).
+docker exec -u splunk anchor-splunk /opt/splunk/bin/splunk add oneshot /seed/healthy.log \
+  -index main -sourcetype _json -auth 'admin:Anchor!Demo2026'
+docker exec -u splunk anchor-splunk /opt/splunk/bin/splunk add oneshot /seed/drifted.log \
+  -index main -sourcetype _json -auth 'admin:Anchor!Demo2026'
 ```
 
 ### 4. Run

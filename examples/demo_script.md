@@ -11,7 +11,7 @@ before recording.
 - [ ] `.env` filled in (defaults match the docker-compose container; add `QWEN_API_KEY` *or* `GEMINI_API_KEY`)
 - [ ] `pip install -e .` succeeded in active venv
 - [ ] `python examples/seed_data.py` run; both `healthy.log` and `drifted.log` exist
-- [ ] Both logs ingested into `index=main` via `docker exec anchor-splunk splunk add oneshot ...` (verify: `index=main | stats count` in Splunk Web shows a non-zero result)
+- [ ] Both logs ingested into `index=main` via `docker exec -u splunk anchor-splunk splunk add oneshot ...` (verify: `index=main | stats count` in Splunk Web shows a non-zero result). The `-u splunk` flag is required — without it, root cannot write to splunk-owned paths in the container.
 - [ ] Terminal font ≥ 16pt, dark background, window sized for screen recording (1280×720 min)
 - [ ] Clipboard cleared, notes app closed, notifications muted
 
