@@ -8,7 +8,10 @@ services:
     image: splunk/splunk:latest
     container_name: anchor-splunk
     environment:
+      # Splunk 9.4+ requires BOTH flags to accept the Splunk General Terms.
+      # See https://www.splunk.com/en_us/legal/splunk-general-terms.html
       SPLUNK_START_ARGS: "--accept-license"
+      SPLUNK_GENERAL_TERMS: "--accept-sgt-current-at-splunk-com"
       SPLUNK_PASSWORD: "Anchor!Demo2026"
     ports:
       - "8000:8000"   # Splunk Web UI
