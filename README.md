@@ -8,6 +8,7 @@ drifted, why it matters, and which SPL to run next.
 
 ![Python](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)
 ![Splunk](https://img.shields.io/badge/Splunk-9.x-000000?logo=splunk&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![splunk-sdk](https://img.shields.io/badge/splunk--sdk-2.0+-000000?logo=splunk&logoColor=white)
 ![Pydantic](https://img.shields.io/badge/pydantic-2.7+-E92063?logo=pydantic&logoColor=white)
 ![Click](https://img.shields.io/badge/click-8.1+-000000)
@@ -77,17 +78,39 @@ sequenceDiagram
 
 ## Quick start
 
+### 1. Bring up a Splunk sandbox (Docker)
+
 ```bash
-# 1. Install
+docker compose up -d                  # Splunk Enterprise on :8000 (Web) :8089 (API)
+# Wait ~60s for first-boot init, then login at http://localhost:8000
+#   user: admin   password: Anchor!Demo2026
+```
+
+Native install? See [docs.splunk.com](https://docs.splunk.com/Documentation/Splunk/latest/Installation/InstallonLinux)
+— `.env.example` defaults assume the Docker container.
+
+### 2. Install Anchor
+
+```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-cp .env.example .env   # fill in Splunk + Qwen/Gemini creds
+cp .env.example .env                  # fill in Qwen or Gemini API key
+```
 
-# 2. (Optional) seed demo data
-python examples/seed_data.py
-# upload examples/data/*.log to index=main via Splunk Web
+### 3. Seed and ingest demo data
 
-# 3. Run
+```bash
+python examples/seed_data.py          # writes examples/data/{healthy,drifted}.log
+
+docker exec anchor-splunk /opt/splunk/bin/splunk add oneshot /seed/healthy.log \
+  -index main -sourcetype _json -auth admin:Anchor!Demo2026
+docker exec anchor-splunk /opt/splunk/bin/splunk add oneshot /seed/drifted.log \
+  -index main -sourcetype _json -auth admin:Anchor!Demo2026
+```
+
+### 4. Run
+
+```bash
 anchor capture --name "Healthy Week" \
   --from 2026-05-20T00:00:00 --to 2026-05-27T00:00:00 \
   --index main --metric latency_ms
@@ -101,6 +124,8 @@ anchor feedback <drift_id> --outcome resolved --reason "payment-svc rollback"
 anchor history --unresolved
 anchor blind-spots
 ```
+
+Tear down the sandbox when done: `docker compose down -v`.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full diagrams and
 [examples/demo_script.md](examples/demo_script.md) for the timed demo flow.

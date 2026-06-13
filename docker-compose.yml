@@ -1,0 +1,33 @@
+# One-command Splunk Enterprise sandbox for the Anchor demo.
+# Bring up:   docker compose up -d
+# Tear down:  docker compose down -v
+# Login:      http://localhost:8000  (admin / Anchor!Demo2026)
+
+services:
+  splunk:
+    image: splunk/splunk:latest
+    container_name: anchor-splunk
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      SPLUNK_PASSWORD: "Anchor!Demo2026"
+    ports:
+      - "8000:8000"   # Splunk Web UI
+      - "8089:8089"   # Management API (Anchor talks to this)
+      - "8088:8088"   # HEC (optional, for live ingest)
+    volumes:
+      - splunk-var:/opt/splunk/var
+      - splunk-etc:/opt/splunk/etc
+      # Mount Anchor's KV Store collection definitions into the search app
+      - ./splunk/collections.conf:/opt/splunk/etc/apps/search/local/collections.conf:ro
+      # Mount seed-data dir so `splunk add oneshot` can reach it from inside the container
+      - ./examples/data:/seed:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:8089/services/server/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  splunk-var:
+  splunk-etc:

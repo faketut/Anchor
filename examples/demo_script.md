@@ -6,11 +6,12 @@ before recording.
 
 ## Pre-flight checklist (do these before hitting record)
 
-- [ ] Splunk Enterprise running, you can log in to `http://localhost:8000`
-- [ ] `.env` filled in (Splunk creds + `QWEN_API_KEY` *or* `GEMINI_API_KEY`)
+- [ ] Docker Desktop running
+- [ ] `docker compose up -d` succeeded; `http://localhost:8000` loads (login `admin` / `Anchor!Demo2026`)
+- [ ] `.env` filled in (defaults match the docker-compose container; add `QWEN_API_KEY` *or* `GEMINI_API_KEY`)
 - [ ] `pip install -e .` succeeded in active venv
 - [ ] `python examples/seed_data.py` run; both `healthy.log` and `drifted.log` exist
-- [ ] Both logs ingested into `index=main` (verify: search `index=main | stats count` shows a non-zero result)
+- [ ] Both logs ingested into `index=main` via `docker exec anchor-splunk splunk add oneshot ...` (verify: `index=main | stats count` in Splunk Web shows a non-zero result)
 - [ ] Terminal font ≥ 16pt, dark background, window sized for screen recording (1280×720 min)
 - [ ] Clipboard cleared, notes app closed, notifications muted
 
