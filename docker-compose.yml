@@ -17,8 +17,12 @@ services:
     volumes:
       - splunk-var:/opt/splunk/var
       - splunk-etc:/opt/splunk/etc
-      # Mount Anchor's KV Store collection definitions into the search app
-      - ./splunk/collections.conf:/opt/splunk/etc/apps/search/local/collections.conf:ro
+      # collections.conf is NOT bind-mounted — single-file bind mounts break
+      # splunk-ansible's chown step on Docker Desktop (Windows/macOS).
+      # Install it after the container is healthy:
+      #   docker cp splunk/collections.conf anchor-splunk:/opt/splunk/etc/apps/search/local/collections.conf
+      #   docker exec -u root anchor-splunk chown splunk:splunk /opt/splunk/etc/apps/search/local/collections.conf
+      #   docker exec anchor-splunk /opt/splunk/bin/splunk restart
       # Mount seed-data dir so `splunk add oneshot` can reach it from inside the container
       - ./examples/data:/seed:ro
     healthcheck:
