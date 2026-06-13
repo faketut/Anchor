@@ -22,7 +22,10 @@ services:
       - splunk-etc:/opt/splunk/etc
       # collections.conf is NOT bind-mounted — single-file bind mounts break
       # splunk-ansible's chown step on Docker Desktop (Windows/macOS).
-      # Install it after the container is healthy:
+      # Install it after the container is healthy. NB: search/local/ does NOT
+      # exist on a fresh Splunk install — mkdir it first or `docker cp` will
+      # silently misbehave.
+      #   docker exec -u splunk anchor-splunk mkdir -p /opt/splunk/etc/apps/search/local
       #   docker cp splunk/collections.conf anchor-splunk:/opt/splunk/etc/apps/search/local/collections.conf
       #   docker exec -u root   anchor-splunk chown splunk:splunk /opt/splunk/etc/apps/search/local/collections.conf
       #   docker exec -u splunk anchor-splunk /opt/splunk/bin/splunk restart
