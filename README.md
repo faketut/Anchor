@@ -30,6 +30,39 @@ A chatbot prompt answers "is this weird?" once. Anchor turns that into a
 
 ---
 
+## System overview
+
+```mermaid
+flowchart TB
+    subgraph User["User"]
+        CLI["anchor CLI<br/>(capture · compare · feedback · history)"]
+    end
+
+    subgraph Core["Anchor core (src/anchor)"]
+        Agent["agent.py<br/>orchestrator"]
+        FP["fingerprint.py<br/>extract signals"]
+        Diff["diff.py<br/>rank by severity × weight"]
+        Narr["narrator.py<br/>LLM summary + hypothesis"]
+        Mem["memory.py<br/>KV Store I/O"]
+    end
+
+    subgraph External["External services"]
+        SplunkAPI["Splunk REST API<br/>:8089"]
+        KV[("Splunk KV Store<br/>anchors · drifts · weights")]
+        LLM["LLM provider<br/>Qwen / Gemini / Splunk"]
+    end
+
+    CLI --> Agent
+    Agent --> FP
+    Agent --> Diff
+    Agent --> Narr
+    Agent --> Mem
+
+    FP -->|SPL queries| SplunkAPI
+    Mem <-->|REST| KV
+    Narr -->|OpenAI-compatible| LLM
+```
+
 ## Workflow
 
 ```mermaid
