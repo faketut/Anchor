@@ -1,6 +1,6 @@
 # Anchor — Demo Script
 
-Target: **≤ 3 minutes** total. Recorded in a single terminal window with a
+Target: **≤ 4 minutes** total. Recorded in a single terminal window with a
 visible Splunk Web tab in the background. Practice once with a stopwatch
 before recording.
 
@@ -15,16 +15,39 @@ before recording.
 - [ ] Terminal font ≥ 16pt, dark background, window sized for screen recording (1280×720 min)
 - [ ] Clipboard cleared, notes app closed, notifications muted
 
-Note the exact timestamps printed by `seed_data.py`. The walkthrough uses
-placeholders `<HEALTHY_FROM>`, `<HEALTHY_TO>`, `<DRIFT_FROM>`, `<DRIFT_TO>`,
-and `<DRIFT2_FROM>`, `<DRIFT2_TO>` (a *second* drifted window — pick any
-overlapping sub-range of the drifted period so the signals overlap and
-`recall_similar_drifts` finds the first one). Substitute the real values
-into your shell history before recording so the commands are one-key recall.
+### Pick your windows (copy from `seed_data.py` output)
+
+The script prints two lines like:
+
+```
+Healthy window: 2026-06-01T00:00:00+00:00 → 2026-06-08T00:00:00+00:00
+Drifted window: 2026-06-14T00:00:00+00:00 → 2026-06-15T00:00:00+00:00
+```
+
+Fill in the four placeholders below using a **half-and-half split** of the
+drifted window — that guarantees both compare runs see the same injected
+anomalies (`PaymentGatewayTimeout` template + checkout-svc p99 spike), so
+`recall_similar_drifts` finds the first incident with Jaccard overlap well
+above its 0.15 floor.
+
+| placeholder         | value (example for the dates above)            |
+| ------------------- | ---------------------------------------------- |
+| `<HEALTHY_FROM>`    | `2026-06-01T00:00`                             |
+| `<HEALTHY_TO>`      | `2026-06-08T00:00`                             |
+| `<DRIFT_FROM>`      | `2026-06-14T00:00`  *(first 12 h of drifted)*  |
+| `<DRIFT_TO>`        | `2026-06-14T12:00`                             |
+| `<DRIFT2_FROM>`     | `2026-06-14T12:00`  *(last 12 h of drifted)*   |
+| `<DRIFT2_TO>`       | `2026-06-15T00:00`                             |
+
+Substitute the real values into your shell history before recording so the
+commands are one-key recall.
 
 ---
 
 ## Scene-by-scene script
+
+> Total budget ≈ 3:30. Use the spare 30 s as buffer for narration pacing,
+> not extra panels.
 
 ### Scene 1 · The hook (0:00 – 0:20)
 
@@ -98,7 +121,7 @@ anchor compare \
 
 ---
 
-### Scene 4 · The memory loop (1:50 – 2:30)
+### Scene 4 · The memory loop (1:50 – 2:50)
 
 **Narration:**
 > "I confirm the cause was a payment-svc deploy. I record that feedback —
@@ -119,12 +142,22 @@ Point out in the `learned` table: `template:appeared:PaymentGatewayTimeout`
 and the `metric:latency_ms:p99` row now have **weight > 1.0** with
 `✓ confirmed = 1`. These signals will rank higher in *every future compare*.
 
-**Then re-run compare on a second drift window** to show recall in action:
+**Then re-run compare on the *second half* of the drifted window** — this
+is the key shot of the demo, so don't rush it:
+
 ```bash
 anchor compare \
   --from <DRIFT2_FROM> --to <DRIFT2_TO> \
   --focus "checkout slowness round 2"
 ```
+
+> **Why this window works.** The seed script injects the same anomalies
+> uniformly across all 24 drifted hours, so the first-half and second-half
+> compares both surface `PaymentGatewayTimeout` and the checkout p99
+> spike. Their signal sets overlap ≈ 100%, well above the 0.15 Jaccard
+> floor in `memory.recall_similar_drifts`, so the recall fires reliably on
+> camera while still looking like a *different* incident (different
+> timestamps, fresh drift_id, freshly written narration).
 
 Point to the new **"Recalled past incidents"** table beneath the report.
 It cites the drift you just resolved, with its `confirmed reason` shown.
@@ -138,7 +171,7 @@ by ID* and proposes a tighter hypothesis because it has prior ground truth.
 
 ---
 
-### Scene 5 · The differentiator (2:30 – 2:50)
+### Scene 5 · The differentiator (2:50 – 3:15)
 
 **Narration over the architecture diagram** (switch tab to the System
 overview Mermaid diagram in README.md, VS Code preview):
@@ -158,7 +191,7 @@ Flash the system overview Mermaid diagram for ~5 seconds.
 
 ---
 
-### Scene 6 · Close (2:50 – 3:00)
+### Scene 6 · Close (3:15 – 3:30)
 
 **Narration:**
 > "Anchor — a MemoryAgent for SRE incident response. Splunk + Qwen Cloud +
