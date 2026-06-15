@@ -35,3 +35,34 @@ def test_compare_command_threads_provider_to_agent(monkeypatch) -> None:
         catch_exceptions=True,
     )
     assert seen_kwargs.get("provider") == "gemini"
+
+
+def test_compare_rejects_equal_window(monkeypatch) -> None:
+    """`--from` == `--to` must fail at the CLI with a friendly error,
+    not bubble up as a Splunk HTTP 400."""
+
+    def _should_not_be_called(*_a, **_kw):
+        raise AssertionError("agent.compare must not be invoked on an empty window")
+
+    monkeypatch.setattr(cli_module.agent, "compare", _should_not_be_called)
+    result = CliRunner().invoke(
+        cli_module.cli,
+        [
+            "compare",
+            "--from", "2026-06-12T23:00:00+00:00",
+            "--to", "2026-06-12T23:00:00+00:00",
+            "--focus", "checkout slowness",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "must be strictly after" in result.output
+
+
+def test_compare_rejects_inverted_window(monkeypatch) -> None:
+    monkeypatch.setattr(cli_module.agent, "compare", lambda *a, **k: None)
+    result = CliRunner().invoke(
+        cli_module.cli,
+        ["compare", "--from", "2026-06-14T02:00", "--to", "2026-06-14T01:00"],
+    )
+    assert result.exit_code != 0
+    assert "must be strictly after" in result.output

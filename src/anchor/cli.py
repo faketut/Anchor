@@ -27,6 +27,23 @@ def _parse_dt(value: str) -> datetime:
     raise click.BadParameter(f"Could not parse datetime: {value}")
 
 
+def _parse_window(start: str, end: str) -> tuple[datetime, datetime]:
+    """Parse a --from / --to pair and validate that start < end.
+
+    Splunk rejects equal or inverted time windows with a 400 from
+    ``jobs/create``. Catch the mistake here so the user sees a friendly
+    message instead of a stack trace.
+    """
+    start_dt = _parse_dt(start)
+    end_dt = _parse_dt(end)
+    if end_dt <= start_dt:
+        raise click.BadParameter(
+            f"--to ({end}) must be strictly after --from ({start}). "
+            "Splunk does not accept empty or inverted time windows."
+        )
+    return start_dt, end_dt
+
+
 def _resolve_anchor_id(prefix: str) -> str:
     """Accept full UUID or unique short prefix; return full id or raise."""
     matches = [a for a in agent.all_anchors() if a.id.startswith(prefix)]
@@ -71,8 +88,9 @@ def cli() -> None:
 @click.option("--metric", "metrics", multiple=True, default=(), help="Numeric field to baseline (repeatable).")
 def capture(name: str, start: str, end: str, indexes: tuple, sourcetypes: tuple, metrics: tuple) -> None:
     """Capture a healthy-window fingerprint and persist it as an anchor."""
+    start_dt, end_dt = _parse_window(start, end)
     scope = Scope(indexes=list(indexes), sourcetypes=list(sourcetypes))
-    anchor = agent.capture_anchor(name, _parse_dt(start), _parse_dt(end), scope, list(metrics))
+    anchor = agent.capture_anchor(name, start_dt, end_dt, scope, list(metrics))
     fp = anchor.fingerprint
     console.print(f"[bold green]Anchored[/bold green] '{anchor.name}' [dim]({anchor.id})[/dim]")
     console.print(
@@ -199,11 +217,12 @@ def show_anchor_cmd(anchor_id: str, raw: bool, top: int) -> None:
 @click.option("--llm", type=click.Choice(LLM_PROVIDERS), default=None, help="Override ANCHOR_LLM provider for this call.")
 def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metrics: tuple, llm: str | None) -> None:
     """Compare a time window against an anchor and narrate the drift."""
+    start_dt, end_dt = _parse_window(start, end)
     resolved_id = _resolve_anchor_id(anchor_id) if anchor_id else None
     result = agent.compare(
         resolved_id,
-        _parse_dt(start),
-        _parse_dt(end),
+        start_dt,
+        end_dt,
         focus=focus,
         metric_fields=list(metrics) or None,
         provider=llm,
