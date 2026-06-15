@@ -1,7 +1,6 @@
 """Click-based CLI: capture, list, show, compare, feedback, history, blind-spots."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 import click
@@ -10,11 +9,12 @@ from rich.json import JSON
 from rich.table import Table
 
 from . import agent
+from .memory import get_drift
 from .models import Scope
 
 console = Console()
 
-LLM_PROVIDERS = ["qwen", "gemini", "splunk"]
+LLM_PROVIDERS = ["qwen", "gemini"]
 
 
 def _parse_dt(value: str) -> datetime:
@@ -25,16 +25,6 @@ def _parse_dt(value: str) -> datetime:
         except ValueError:
             continue
     raise click.BadParameter(f"Could not parse datetime: {value}")
-
-
-def _apply_llm_override(llm: str | None) -> None:
-    """Override ANCHOR_LLM for this process. Must run BEFORE importing config consumers."""
-    if not llm:
-        return
-    os.environ["ANCHOR_LLM"] = llm
-    # Reload CONFIG so downstream picks up the new value
-    from . import config as _cfg
-    _cfg.CONFIG = _cfg.Config()
 
 
 def _resolve_anchor_id(prefix: str) -> str:
@@ -51,6 +41,12 @@ def _resolve_anchor_id(prefix: str) -> str:
 def _resolve_drift_id(prefix: str) -> str:
     matches = [d for d in agent.list_history(limit=500) if d.id.startswith(prefix)]
     if not matches:
+        # Fallback for older drifts that aren't in the most-recent 500: if the
+        # user gave a full UUID, look it up directly in KV.
+        if len(prefix) == 36:
+            direct = get_drift(prefix)
+            if direct is not None:
+                return direct.id
         raise click.BadParameter(f"No drift record matching id '{prefix}'")
     if len(matches) > 1:
         ids = ", ".join(m.id[:12] for m in matches)
@@ -203,10 +199,14 @@ def show_anchor_cmd(anchor_id: str, raw: bool, top: int) -> None:
 @click.option("--llm", type=click.Choice(LLM_PROVIDERS), default=None, help="Override ANCHOR_LLM provider for this call.")
 def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metrics: tuple, llm: str | None) -> None:
     """Compare a time window against an anchor and narrate the drift."""
-    _apply_llm_override(llm)
     resolved_id = _resolve_anchor_id(anchor_id) if anchor_id else None
     result = agent.compare(
-        resolved_id, _parse_dt(start), _parse_dt(end), focus=focus, metric_fields=list(metrics) or None
+        resolved_id,
+        _parse_dt(start),
+        _parse_dt(end),
+        focus=focus,
+        metric_fields=list(metrics) or None,
+        provider=llm,
     )
 
     console.rule(f"[bold]Drift report[/bold] — anchor '{result.anchor.name}' [dim]({result.drift.id})[/dim]")
@@ -224,18 +224,41 @@ def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metr
         t.add_column("note", style="dim")
         sev_color = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "white"}
         for d in result.top_diffs:
+            if d.delta_pct is None:
+                # "appeared" signals — anchor=0, current>0; show "new" rather than
+                # a fabricated magic percent.
+                delta_str = "new"
+            else:
+                delta_str = f"{d.delta_pct:+.1f}"
             t.add_row(
                 f"[{sev_color[d.severity]}]{d.severity}[/]",
                 d.signal,
                 str(d.anchor_val),
                 str(d.current_val),
-                "" if d.delta_pct is None else f"{d.delta_pct:+.1f}",
+                delta_str,
                 d.note,
             )
         console.print(t)
 
     if result.drill_in_spl:
         console.print(f"\n[bold]DRILL-IN SPL[/bold]\n[cyan]{result.drill_in_spl}[/cyan]\n")
+
+    if result.recalled:
+        t = Table(title="Recalled past incidents (memory)")
+        t.add_column("id", style="dim")
+        t.add_column("when")
+        t.add_column("outcome")
+        t.add_column("overlap", justify="right")
+        t.add_column("confirmed reason", overflow="fold")
+        for past, sim in result.recalled:
+            t.add_row(
+                past.id[:8],
+                f"{past.timestamp:%Y-%m-%d %H:%M}",
+                past.outcome,
+                f"{sim:.0%}",
+                past.engineer_confirmed_reason or "—",
+            )
+        console.print(t)
 
     console.print(
         f"[dim]Mark outcome with:[/dim] "
@@ -302,6 +325,63 @@ def blind_spots(min_count: int) -> None:
     for s, c in spots:
         t.add_row(s, str(c))
     console.print(t)
+
+
+# ---- LEARNED (memory introspection) ----------------------------------------
+
+
+@cli.command("learned")
+@click.option("--limit", default=20, type=int, help="How many signals to show in each table.")
+@click.option("--eps", default=0.05, type=float, help="Within this distance from 1.0 = 'forgotten'.")
+def learned_cmd(limit: int, eps: float) -> None:
+    """Show what Anchor has learned: re-weighted signals + signals decaying back to neutral.
+
+    This is the introspection window into Anchor's persistent memory:
+      - 'Learned' = weight ≠ 1.0; agent has opinions about these signals.
+      - 'Forgotten' = weight ≈ 1.0 but seen before; institutional memory faded
+        (via time-based decay) or never had feedback.
+    """
+    signals = agent.learned_signals()
+    if not signals:
+        console.print("[yellow]No memory yet — run `anchor compare` and then `anchor feedback`.[/yellow]")
+        return
+
+    learned = [w for w in signals if abs(w.weight - 1.0) >= eps]
+    forgotten = [w for w in signals if abs(w.weight - 1.0) < eps and w.total_appearances > 0]
+
+    if learned:
+        t = Table(title=f"Top {min(limit, len(learned))} learned signals")
+        t.add_column("signal", overflow="fold")
+        t.add_column("weight", justify="right")
+        t.add_column("✓ confirmed", justify="right")
+        t.add_column("✗ false pos", justify="right")
+        t.add_column("seen", justify="right")
+        t.add_column("last used")
+        for w in learned[:limit]:
+            arrow = "[green]▲[/green]" if w.weight > 1.0 else "[red]▼[/red]"
+            last = f"{w.last_used_at:%Y-%m-%d %H:%M}" if w.last_used_at else "—"
+            t.add_row(
+                w.signal_name,
+                f"{arrow} {w.weight:.2f}",
+                str(w.confirmed_count),
+                str(w.false_positive_count),
+                str(w.total_appearances),
+                last,
+            )
+        console.print(t)
+
+    if forgotten:
+        t = Table(title=f"Forgotten signals (weight ≈ 1.0 after decay)")
+        t.add_column("signal", overflow="fold")
+        t.add_column("seen", justify="right")
+        t.add_column("last used")
+        for w in forgotten[:limit]:
+            last = f"{w.last_used_at:%Y-%m-%d %H:%M}" if w.last_used_at else "—"
+            t.add_row(w.signal_name, str(w.total_appearances), last)
+        console.print(t)
+
+    if not learned and not forgotten:
+        console.print("[yellow]No learned or forgotten signals to show.[/yellow]")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,32 @@
+# Alibaba Cloud ECS overlay — production-ish hardening for the hackathon demo.
+#
+# Usage on the ECS host:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f deploy/docker-compose.alibaba.yml \
+#     up -d
+#
+# Differences from the base compose:
+#   - restart: unless-stopped  (survives ECS reboots)
+#   - Splunk Web (8000) bound to localhost only — access it via SSH tunnel,
+#     so you don't have to expose admin UI to the public internet during demo.
+#     `ssh -L 8000:localhost:8000 root@<ecs-ip>` then open http://localhost:8000
+#   - Mgmt API (8089) stays exposed for the Anchor CLI to talk in. Lock it
+#     down at the security-group level (allow only your laptop's IP).
+#   - HEC port (8088) removed entirely — not needed for the demo flow.
+#   - Resource caps so a runaway Splunk doesn't OOM the whole ECS box.
+
+services:
+  splunk:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:8000:8000"   # Splunk Web — SSH tunnel only
+      - "8089:8089"              # mgmt API — restrict via ECS security group
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 2G

@@ -1,0 +1,25 @@
+%% Architecture diagram for Anchor.
+%% Mirrors the first ```mermaid``` block in /README.md "System overview".
+%% If you change one, change the other — and re-render to docs/architecture.png:
+%%   mmdc -i docs/architecture.mmd -o docs/architecture.png -t default -b white --width 1600 --scale 2
+flowchart TB
+    subgraph Laptop["User (laptop)"]
+        CLI["anchor CLI<br/>capture · compare · feedback<br/>history · learned · blind-spots"]
+    end
+
+    subgraph Alibaba["Alibaba Cloud"]
+        subgraph ECS["ECS instance"]
+            Splunk["Splunk Enterprise<br/>(Docker)"]
+            KV[("Splunk KV Store<br/>anchors · drifts · weights")]
+            Splunk --- KV
+        end
+        OSS[("OSS bucket<br/>anchor-memory/*.json<br/>daily snapshots")]
+    end
+
+    subgraph Qwen["Qwen Cloud (DashScope)"]
+        QwenModel["qwen-plus<br/>OpenAI-compatible"]
+    end
+
+    CLI -->|REST :8089<br/>SPL + KV CRUD| Splunk
+    KV -.->|nightly cron<br/>oss2 SDK| OSS
+    CLI -->|OpenAI chat completions| QwenModel

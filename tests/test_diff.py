@@ -44,7 +44,7 @@ def _pat(template: str, freq: float, count: int, sourcetype: str = "web") -> Log
 # ---- volume_diff -----------------------------------------------------------
 
 
-def test_volume_diff_flags_increase_with_z_score() -> None:
+def test_volume_diff_flags_increase_by_delta() -> None:
     anchor = _fp(per_source={"web": 1000}, hourly=[100.0] * 24)
     current = _fp(per_source={"web": 5000}, hourly=[100.0] * 24)
 
@@ -55,7 +55,7 @@ def test_volume_diff_flags_increase_with_z_score() -> None:
     assert d.signal == "volume:web"
     assert d.kind == "volume"
     assert d.delta_pct == 400.0
-    # z = (5000 - 1000) / max(stddev, 1.0) — stddev of constant is 0 → sigma=1 → z=4000
+    # 400% ≥ HIGH_DELTA (200) → HIGH severity by delta alone.
     assert d.severity == "HIGH"
 
 
@@ -68,6 +68,9 @@ def test_volume_diff_handles_appeared_source() -> None:
     assert "volume:auth" in diffs
     assert diffs["volume:auth"].anchor_val == 0
     assert diffs["volume:auth"].current_val == 50
+    # Newly-appeared sources expose delta_pct=None (no magic 1000 sentinel).
+    assert diffs["volume:auth"].delta_pct is None
+    assert diffs["volume:auth"].severity == "HIGH"
 
 
 def test_volume_diff_skips_double_zero() -> None:

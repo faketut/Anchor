@@ -1,10 +1,11 @@
 # Anchor
 
-**Healthy-baseline drift agent for Splunk.**
+**A MemoryAgent for SRE incident response — built on Splunk + Qwen.**
 
 Capture a "golden fingerprint" of a time window when your system was healthy.
 Later, compare any window against it and get a plain-English narrative of what
-drifted, why it matters, and which SPL to run next.
+drifted, why it matters, and which SPL to run next — *informed by what the
+agent learned from every past investigation.*
 
 ![Python](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)
 ![Splunk](https://img.shields.io/badge/Splunk-9.x-000000?logo=splunk&logoColor=white)
@@ -13,20 +14,31 @@ drifted, why it matters, and which SPL to run next.
 ![Pydantic](https://img.shields.io/badge/pydantic-2.7+-E92063?logo=pydantic&logoColor=white)
 ![Click](https://img.shields.io/badge/click-8.1+-000000)
 ![Qwen](https://img.shields.io/badge/Qwen-DashScope-615CED?logo=alibabacloud&logoColor=white)
-![Gemini](https://img.shields.io/badge/Gemini-2.0-4285F4?logo=googlegemini&logoColor=white)
+![Alibaba Cloud](https://img.shields.io/badge/Alibaba%20Cloud-ECS%20%2B%20OSS-FF6A00?logo=alibabacloud&logoColor=white)
 ![Rich](https://img.shields.io/badge/rich-13.7+-FAE100)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 
 ---
 
-## Why
+## Why a MemoryAgent
 
-Existing Splunk anomaly tooling trains on *recent* history that may already
-be drifted. Anchor fixes a **human-curated healthy window** as ground truth
-and reuses it indefinitely — even after raw logs age out of retention.
+Every on-call engineer has had this moment: an incident hits, you open Splunk,
+and you waste the first 15–20 minutes asking *"wait — what does normal even
+look like for this service?"*
 
-A chatbot prompt answers "is this weird?" once. Anchor turns that into a
-**named, shared, versioned artifact** your whole team returns to.
+Existing anomaly tooling trains on *recent* history that may already be drifted.
+A chatbot prompt answers *"is this weird?"* once — then evaporates.
+
+**Anchor remembers three things, persistently:**
+
+| Memory | Stored as | What it does |
+|---|---|---|
+| What "healthy" looked like | `anchors` in Splunk KV Store | Lets any future investigation diff against a *human-curated* baseline, not yesterday's already-drifted data. Survives raw-log retention. |
+| Which signals actually matter | `signal_weights` | Re-ranks diffs based on accumulated feedback. Confirmed signals weigh more; false-positive signals weigh less; both decay toward neutral over time (*timely forgetting*). |
+| What we did about it last time | `drift_history` | On every compare, the most similar past resolved drifts are recalled and fed into the LLM as evidence ("incident `7db2d8aa` had the same fingerprint — payment-svc rollback fixed it"). |
+
+The result: a Splunk drift agent that gets sharper across sessions, with a
+deterministic core and an LLM only at the narration layer.
 
 ---
 
@@ -34,68 +46,55 @@ A chatbot prompt answers "is this weird?" once. Anchor turns that into a
 
 ```mermaid
 flowchart TB
-    subgraph User["User"]
-        CLI["anchor CLI<br/>(capture · compare · feedback · history)"]
+    subgraph Laptop["User (laptop)"]
+        CLI["anchor CLI<br/>capture · compare · feedback<br/>history · learned · blind-spots"]
     end
 
-    subgraph Core["Anchor core (src/anchor)"]
-        Agent["agent.py<br/>orchestrator"]
-        FP["fingerprint.py<br/>extract signals"]
-        Diff["diff.py<br/>rank by severity × weight"]
-        Narr["narrator.py<br/>LLM summary + hypothesis"]
-        Mem["memory.py<br/>KV Store I/O"]
+    subgraph Alibaba["Alibaba Cloud"]
+        subgraph ECS["ECS instance"]
+            Splunk["Splunk Enterprise<br/>(Docker)"]
+            KV[("Splunk KV Store<br/>anchors · drifts · weights")]
+            Splunk --- KV
+        end
+        OSS[("OSS bucket<br/>anchor-memory/*.json<br/>daily snapshots")]
     end
 
-    subgraph External["External services"]
-        SplunkAPI["Splunk REST API<br/>:8089"]
-        KV[("Splunk KV Store<br/>anchors · drifts · weights")]
-        LLM["LLM provider<br/>Qwen / Gemini / Splunk"]
+    subgraph Qwen["Qwen Cloud (DashScope)"]
+        QwenModel["qwen-plus<br/>OpenAI-compatible"]
     end
 
-    CLI --> Agent
-    Agent --> FP
-    Agent --> Diff
-    Agent --> Narr
-    Agent --> Mem
-
-    FP -->|SPL queries| SplunkAPI
-    Mem <-->|REST| KV
-    Narr -->|OpenAI-compatible| LLM
+    CLI -->|REST :8089<br/>SPL + KV CRUD| Splunk
+    KV -.->|nightly cron<br/>oss2 SDK| OSS
+    CLI -->|OpenAI chat completions| QwenModel
 ```
 
-## Workflow
+> **MemoryAgent loop**: each `compare` reads `signal_weights` (learned ranking)
+> and `drift_history` (recalled past incidents) before calling the LLM, then
+> writes a new drift record. Each `feedback` updates `signal_weights`.
+> Weights silently decay toward 1.0 over ~30 days to forget stale opinions.
 
-```mermaid
-flowchart LR
-    A[anchor capture] --> B[(KV Store<br/>fingerprint)]
-    C[anchor compare] --> B
-    C --> D[Diff Engine]
-    D --> E[LLM Narrator]
-    E --> F[Drift Report<br/>summary + table + SPL]
-    F --> G[anchor feedback]
-    G --> H[(signal_weights)]
-    H -.re-rank.-> D
-```
-
-## Compare lifecycle
+## Compare lifecycle (with memory)
 
 ```mermaid
 sequenceDiagram
     actor User
     participant CLI
-    participant Splunk
-    participant LLM
     participant KV as KV Store
+    participant Splunk
+    participant Qwen
 
     User->>CLI: anchor compare --from T1 --to T2
-    CLI->>KV: load anchor + weights
+    CLI->>KV: load anchor + weights (apply decay)
     CLI->>Splunk: SPL (fingerprint queries)
     Splunk-->>CLI: rows
-    CLI->>CLI: diff anchor vs current
-    CLI->>LLM: ranked diffs
-    LLM-->>CLI: summary + hypothesis + SPL
-    CLI->>KV: save drift record
-    CLI-->>User: rendered report
+    CLI->>CLI: diff + rank (severity × weight)
+    CLI->>KV: recall top-3 similar past drifts
+    KV-->>CLI: past incidents (resolved / false_pos)
+    CLI->>Qwen: ranked diffs + past incidents
+    Qwen-->>CLI: summary + hypothesis (may cite past id) + SPL
+    CLI->>KV: save new drift record
+    CLI->>KV: bump appearance counters
+    CLI-->>User: rendered report + recalled incidents table
 ```
 
 ---
@@ -103,9 +102,20 @@ sequenceDiagram
 ## Features
 
 - **`anchor capture`** — fingerprint a window (volume, log templates, error rates, metric percentiles, top hosts) and persist to Splunk KV Store.
-- **`anchor compare`** — diff a target window against an anchor; LLM-narrated report with a ranked top-diffs table and suggested drill-in SPL.
-- **`anchor feedback`** — record outcome; signal weights auto-adjust to re-rank future severity.
-- **`anchor history`** / **`anchor blind-spots`** — surface recurring unresolved signals as institutional knowledge.
+- **`anchor compare`** — diff a target window against an anchor; LLM-narrated report with a ranked top-diffs table, suggested drill-in SPL, **and a "recalled past incidents" table** showing the most-similar resolved drifts the agent pulled into the LLM context.
+- **`anchor feedback`** — record outcome; signal weights auto-adjust to re-rank future severity (confirmed signals get +10%, false positives get −20%).
+- **`anchor learned`** — introspect Anchor's memory: which signals have been re-weighted, which are decaying back to neutral.
+- **`anchor history`** / **`anchor blind-spots`** — surface past drift records and signals that recur unresolved.
+
+### MemoryAgent alignment
+
+| Track-1 capability | Anchor implementation |
+|---|---|
+| **Persistent memory** | `anchors`, `drift_history`, `signal_weights` collections in Splunk KV Store. Survives raw-log retention; survives ECS reboots; nightly backups to Alibaba Cloud OSS. |
+| **Accumulates experience** | `anchor feedback` mutates `signal_weights` after every confirmed outcome. |
+| **More accurate decisions across sessions** | Each compare ranks diffs by `severity × weight`. Signals confirmed in past drifts surface higher; false-positive signals get suppressed. |
+| **Timely forgetting of outdated information** | `decay_weights()` pulls weights halfway back to 1.0 every 30 days of inactivity. Lazy-applied on `get_weights()`. |
+| **Recalling critical memories within limited context** | `recall_similar_drifts()` Jaccard-ranks past resolved drifts by signal overlap, top-3 fed into the LLM as `past_incidents`. Bounded — never blows the context window. |
 
 ---
 
@@ -156,14 +166,19 @@ anchor compare \
 
 anchor feedback <drift_id> --outcome resolved --reason "payment-svc rollback"
 
+# Memory introspection — what has the agent learned?
+anchor learned
+
 anchor history --unresolved
 anchor blind-spots
 ```
 
 Tear down the sandbox when done: `docker compose down -v`.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for full diagrams and
-[examples/demo_script.md](examples/demo_script.md) for the timed demo flow.
+For the Alibaba-Cloud-hosted backend (Splunk on ECS + KV memory backups to OSS),
+see [deploy/alibaba-cloud.md](deploy/alibaba-cloud.md).
+
+See [examples/demo_script.md](examples/demo_script.md) for the timed demo flow.
 
 ---
 

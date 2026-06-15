@@ -16,9 +16,11 @@ before recording.
 - [ ] Clipboard cleared, notes app closed, notifications muted
 
 Note the exact timestamps printed by `seed_data.py`. The walkthrough uses
-placeholders `<HEALTHY_FROM>`, `<HEALTHY_TO>`, `<DRIFT_FROM>`, `<DRIFT_TO>` —
-substitute the real values into your shell history before recording so the
-commands are one-key recall.
+placeholders `<HEALTHY_FROM>`, `<HEALTHY_TO>`, `<DRIFT_FROM>`, `<DRIFT_TO>`,
+and `<DRIFT2_FROM>`, `<DRIFT2_TO>` (a *second* drifted window — pick any
+overlapping sub-range of the drifted period so the signals overlap and
+`recall_similar_drifts` finds the first one). Substitute the real values
+into your shell history before recording so the commands are one-key recall.
 
 ---
 
@@ -96,13 +98,12 @@ anchor compare \
 
 ---
 
-### Scene 4 · The memory loop (1:50 – 2:20)
+### Scene 4 · The memory loop (1:50 – 2:30)
 
 **Narration:**
 > "I confirm the cause was a payment-svc deploy. I record that feedback —
-> and Anchor updates its signal weights. The next investigation will rank
-> these signals higher automatically. This is what turns a one-off compare
-> into institutional memory."
+> and Anchor updates its signal weights. Now watch what happens when I
+> re-run compare on a *new* drift window with overlapping signals."
 
 **Run** (copy the drift_id from the previous report's footer):
 ```bash
@@ -110,34 +111,58 @@ anchor feedback <drift_id_prefix> \
   --outcome resolved \
   --reason "payment-svc deploy v2.14.1 — rolled back"
 
-anchor history
+# Show that the agent now has opinions
+anchor learned
 ```
 
-Point to the row now marked `resolved` in the history table.
+Point out in the `learned` table: `template:appeared:PaymentGatewayTimeout`
+and the `metric:latency_ms:p99` row now have **weight > 1.0** with
+`✓ confirmed = 1`. These signals will rank higher in *every future compare*.
+
+**Then re-run compare on a second drift window** to show recall in action:
+```bash
+anchor compare \
+  --from <DRIFT2_FROM> --to <DRIFT2_TO> \
+  --focus "checkout slowness round 2"
+```
+
+Point to the new **"Recalled past incidents"** table beneath the report.
+It cites the drift you just resolved, with its `confirmed reason` shown.
+Then point to the SUMMARY — the LLM now *references the prior incident
+by ID* and proposes a tighter hypothesis because it has prior ground truth.
+
+> "This is what turns a one-off compare into institutional memory. The agent
+> remembers what mattered, forgets what didn't (weights decay over 30 days),
+> and recalls the right past incident the next time a similar pattern shows
+> up — even three weeks later when the original raw logs have aged out."
 
 ---
 
-### Scene 5 · The differentiator (2:20 – 2:45)
+### Scene 5 · The differentiator (2:30 – 2:50)
 
-**Narration over the architecture diagram** (switch tab to
-`ARCHITECTURE.md` or `architecture.png` in VS Code preview):
+**Narration over the architecture diagram** (switch tab to the System
+overview Mermaid diagram in README.md, VS Code preview):
 
-> "Why not just ask a chatbot 'compare last week to this week'? Three reasons.
-> One: fingerprints live in KV Store, so they survive long after raw logs
-> age out of retention. Two: an anchor is a named, versioned team artifact —
-> not a single engineer's prompt history. Three: every compare uses the same
-> SPL queries, so results are reproducible apples-to-apples, not whatever
-> the model decided to check that day."
+> "Why not just ask a chatbot 'compare last week to this week'? Four reasons.
+> One: fingerprints, drift history, and signal weights live in KV Store on
+> Alibaba Cloud — they survive long after raw logs age out of retention,
+> and a nightly job backs them up to OSS. Two: anchors are named, versioned
+> team artifacts, not a single engineer's prompt history. Three: every
+> compare runs the same deterministic SPL queries and ranks diffs by a
+> *learned* weight — results are reproducible apples-to-apples, and the
+> agent gets sharper across sessions. Four: when a similar pattern recurs,
+> the agent recalls the past incident from KV and feeds it to Qwen as
+> evidence — so the model isn't re-discovering the same conclusion every time."
 
 Flash the system overview Mermaid diagram for ~5 seconds.
 
 ---
 
-### Scene 6 · Close (2:45 – 3:00)
+### Scene 6 · Close (2:50 – 3:00)
 
 **Narration:**
-> "Anchor — healthy baselines you can return to. Repo's at
-> github.com/faketut/Anchor. Thanks."
+> "Anchor — a MemoryAgent for SRE incident response. Splunk + Qwen Cloud +
+> Alibaba Cloud, all open source. Repo's at github.com/faketut/Anchor. Thanks."
 
 End card with:
 - Repo URL

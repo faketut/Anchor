@@ -1,7 +1,7 @@
 """Diff engine: pure functions comparing an anchor fingerprint to a current one."""
 from __future__ import annotations
 
-import math
+import hashlib
 
 from .models import DiffEntry, Fingerprint, Severity, SignalWeight
 
@@ -9,10 +9,6 @@ from .models import DiffEntry, Fingerprint, Severity, SignalWeight
 HIGH_DELTA = 200.0  # +/- 200% change
 MED_DELTA = 100.0
 LOW_DELTA = 50.0
-
-VOLUME_Z_HIGH = 5.0
-VOLUME_Z_MED = 3.0
-VOLUME_Z_LOW = 2.0
 
 
 def _severity_from_delta(abs_pct: float) -> Severity:
@@ -23,18 +19,14 @@ def _severity_from_delta(abs_pct: float) -> Severity:
     return "LOW"
 
 
-def _severity_from_z(z: float) -> Severity:
-    z = abs(z)
-    if z >= VOLUME_Z_HIGH:
-        return "HIGH"
-    if z >= VOLUME_Z_MED:
-        return "MEDIUM"
-    return "LOW"
-
-
-def _pct_change(anchor: float, current: float) -> float:
+def _pct_change(anchor: float, current: float) -> float | None:
+    """Percent change from anchor to current. ``None`` means "new" / undefined
+    (anchor was zero and current is positive). Callers should treat ``None``
+    as HIGH severity and render it as ``new`` in UI rather than as a
+    misleading magic number.
+    """
     if anchor == 0:
-        return 1000.0 if current > 0 else 0.0
+        return None if current > 0 else 0.0
     return ((current - anchor) / anchor) * 100.0
 
 
@@ -51,10 +43,22 @@ def volume_diff(anchor: Fingerprint, current: Fingerprint) -> list[DiffEntry]:
         if a == 0 and c == 0:
             continue
         delta = _pct_change(a, c)
-        # z-score using stddev of hourly profile as a rough sigma
-        sigma = max(_stddev(anchor.event_volume.get("hourly_profile", [])), 1.0)
-        z = (c - a) / sigma if sigma else 0.0
-        sev = _severity_from_z(z) if abs(z) >= VOLUME_Z_LOW else _severity_from_delta(abs(delta))
+        # Newly-appeared source: severity is HIGH and delta_pct is None
+        # (we don't fabricate a magic percent for divide-by-zero).
+        if delta is None:
+            out.append(
+                DiffEntry(
+                    signal=f"volume:{src}",
+                    kind="volume",
+                    anchor_val=a,
+                    current_val=c,
+                    delta_pct=None,
+                    severity="HIGH",
+                    note="new sourcetype",
+                )
+            )
+            continue
+        sev = _severity_from_delta(abs(delta))
         out.append(
             DiffEntry(
                 signal=f"volume:{src}",
@@ -63,18 +67,10 @@ def volume_diff(anchor: Fingerprint, current: Fingerprint) -> list[DiffEntry]:
                 current_val=c,
                 delta_pct=round(delta, 1),
                 severity=sev,
-                note=f"z={z:.2f}",
+                note="",
             )
         )
     return out
-
-
-def _stddev(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    m = sum(values) / len(values)
-    var = sum((v - m) ** 2 for v in values) / len(values)
-    return math.sqrt(var)
 
 
 # ---- Template diff ---------------------------------------------------------
@@ -122,7 +118,7 @@ def template_diff(anchor: Fingerprint, current: Fingerprint) -> list[DiffEntry]:
         if a_freq == 0 and c_freq == 0:
             continue
         delta = _pct_change(a_freq, c_freq)
-        if abs(delta) < LOW_DELTA:
+        if delta is None or abs(delta) < LOW_DELTA:
             continue
         out.append(
             DiffEntry(
@@ -140,7 +136,15 @@ def template_diff(anchor: Fingerprint, current: Fingerprint) -> list[DiffEntry]:
 
 
 def _short(template: str, n: int = 32) -> str:
-    return template[:n] if len(template) <= n else template[:n] + "..."
+    """Short, stable, collision-resistant signal-id fragment from a template.
+
+    Two distinct templates that share a 32-char prefix used to collapse to
+    the same signal name; now we append a 6-char MD5 suffix so each template
+    gets a unique id.
+    """
+    suffix = hashlib.md5(template.encode("utf-8", errors="replace")).hexdigest()[:6]
+    head = template[:n] if len(template) <= n else template[:n] + "..."
+    return f"{head}#{suffix}"
 
 
 # ---- Metric diff -----------------------------------------------------------
@@ -158,7 +162,7 @@ def metric_diff(anchor: Fingerprint, current: Fingerprint) -> list[DiffEntry]:
             if a_val == 0 and c_val == 0:
                 continue
             delta = _pct_change(a_val, c_val)
-            if abs(delta) < LOW_DELTA:
+            if delta is None or abs(delta) < LOW_DELTA:
                 continue
             out.append(
                 DiffEntry(

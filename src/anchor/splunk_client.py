@@ -6,9 +6,10 @@ codebase never imports splunk-sdk directly.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 import splunklib.client as splunk_client
 import splunklib.results as splunk_results
@@ -17,19 +18,36 @@ from .config import CONFIG
 
 # ---- Connection ------------------------------------------------------------
 
+_svc: splunk_client.Service | None = None
+
 
 def connect() -> splunk_client.Service:
-    """Return an authenticated Splunk Service handle."""
-    return splunk_client.connect(
-        host=CONFIG.splunk_host,
-        port=CONFIG.splunk_port,
-        username=CONFIG.splunk_username,
-        password=CONFIG.splunk_password,
-        scheme=CONFIG.splunk_scheme,
-        verify=CONFIG.splunk_verify_ssl,
-        app=CONFIG.anchor_app,
-        owner=CONFIG.anchor_owner,
-    )
+    """Return an authenticated Splunk Service handle (cached per process).
+
+    Re-authenticating on every KV operation is wasteful and trips Splunk's
+    session-creation rate limits over slow links. The session is reused for
+    the life of the process; tests can call :func:`reset_connection` to
+    force a fresh handle.
+    """
+    global _svc
+    if _svc is None:
+        _svc = splunk_client.connect(
+            host=CONFIG.splunk_host,
+            port=CONFIG.splunk_port,
+            username=CONFIG.splunk_username,
+            password=CONFIG.splunk_password,
+            scheme=CONFIG.splunk_scheme,
+            verify=CONFIG.splunk_verify_ssl,
+            app=CONFIG.anchor_app,
+            owner=CONFIG.anchor_owner,
+        )
+    return _svc
+
+
+def reset_connection() -> None:
+    """Drop the cached Splunk session. Mainly for tests / config reloads."""
+    global _svc
+    _svc = None
 
 
 # ---- SPL search ------------------------------------------------------------
@@ -76,11 +94,15 @@ def run_search(
         raise TimeoutError(f"SPL exceeded {timeout}s: {body[:120]}")
 
     rows: list[dict[str, Any]] = []
-    reader = splunk_results.JSONResultsReader(job.results(output_mode="json", count=max_count))
-    for item in reader:
-        if isinstance(item, dict):
-            rows.append(item)
-    job.cancel()
+    try:
+        reader = splunk_results.JSONResultsReader(
+            job.results(output_mode="json", count=max_count)
+        )
+        for item in reader:
+            if isinstance(item, dict):
+                rows.append(item)
+    finally:
+        job.cancel()
     return rows
 
 
@@ -101,6 +123,11 @@ COLLECTIONS = {
     "signal_weights": {
         "field.signal_name": "string",
         "field.weight": "number",
+        "field.last_updated": "string",
+        "field.last_used_at": "string",
+        "field.total_appearances": "number",
+        "field.confirmed_count": "number",
+        "field.false_positive_count": "number",
     },
 }
 
@@ -124,8 +151,12 @@ def kv_insert(collection: str, doc: dict) -> str:
     """Insert and return _key."""
     result = _collection(collection).insert(json.dumps(doc, default=str))
     # SDK returns {"_key": "..."}
-    if isinstance(result, dict):
-        return result.get("_key", "")
+    if isinstance(result, dict) and result.get("_key"):
+        return result["_key"]
+    print(
+        f"anchor: kv_insert into {collection!r} returned no _key (got {result!r})",
+        file=sys.stderr,
+    )
     return ""
 
 
@@ -152,5 +183,5 @@ def kv_delete(collection: str, key: str) -> None:
 
 
 # Convenience: iterate, useful for filters that KV query syntax doesn't support
-def kv_all(collection: str) -> Iterable[dict]:
-    return _collection(collection).query()
+def kv_all(collection: str) -> list[dict]:
+    return list(_collection(collection).query())

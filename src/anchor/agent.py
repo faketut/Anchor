@@ -8,18 +8,20 @@ from .diff import diff_all
 from .fingerprint import extract_fingerprint
 from .memory import (
     apply_feedback,
+    bump_appearance,
     get_anchor,
     get_drift,
     get_weights,
     latest_anchor,
     list_anchors,
     list_drifts,
+    recall_similar_drifts,
     recurring_blind_spots,
     save_anchor,
     save_drift,
     update_drift_outcome,
 )
-from .models import Anchor, DiffEntry, DriftRecord, Outcome, Scope, TimeRange
+from .models import Anchor, DiffEntry, DriftRecord, Outcome, Scope, SignalWeight, TimeRange
 from .narrator import narrate
 
 
@@ -30,6 +32,9 @@ class CompareResult(NamedTuple):
     summary: str
     hypothesis: str | None
     drill_in_spl: str | None
+    # Immutable default — NamedTuple defaults are class-level, so use a tuple
+    # to avoid the shared-mutable-default footgun.
+    recalled: tuple[tuple[DriftRecord, float], ...] = ()
 
 
 # ---- ANCHOR ----------------------------------------------------------------
@@ -55,6 +60,7 @@ def compare(
     end: datetime,
     focus: str | None = None,
     metric_fields: list[str] | None = None,
+    provider: str | None = None,
 ) -> CompareResult:
     anchor = get_anchor(anchor_id) if anchor_id else latest_anchor()
     if anchor is None:
@@ -67,7 +73,13 @@ def compare(
 
     weights = get_weights()
     diffs = diff_all(anchor.fingerprint, current_fp, weights=weights, limit=15)
-    narration = narrate(diffs, focus, anchor.name)
+
+    # Memory loop: record that these signals fired again, and recall similar
+    # past drifts (resolved or false-positive) to feed into the narrator.
+    bump_appearance([d.signal for d in diffs])
+    recalled = recall_similar_drifts([d.signal for d in diffs], k=3)
+
+    narration = narrate(diffs, focus, anchor.name, past_incidents=recalled, provider=provider)
     drift = save_drift(
         anchor_id=anchor.id,
         compare_window=TimeRange(start=start, end=end),
@@ -82,6 +94,7 @@ def compare(
         summary=narration.summary,
         hypothesis=narration.hypothesis,
         drill_in_spl=narration.drill_in_spl,
+        recalled=tuple(recalled),
     )
 
 
@@ -112,3 +125,9 @@ def blind_spots(min_count: int = 3) -> list[tuple[str, int]]:
 
 def all_anchors() -> list[Anchor]:
     return list_anchors()
+
+
+def learned_signals() -> list[SignalWeight]:
+    """All known signal weights, sorted by deviation from the 1.0 default (most learned first)."""
+    weights = get_weights().values()
+    return sorted(weights, key=lambda w: abs(w.weight - 1.0), reverse=True)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -75,21 +75,28 @@ class DriftRecord(BaseModel):
     anchor_id: str
     compare_window: TimeRange
     top_diffs: list[DiffEntry]
-    agent_hypothesis: Optional[str] = None
-    engineer_confirmed_reason: Optional[str] = None
+    agent_hypothesis: str | None = None
+    engineer_confirmed_reason: str | None = None
     outcome: Outcome = "unknown"
-    suggested_spl: Optional[str] = None
+    suggested_spl: str | None = None
 
 
 class SignalWeight(BaseModel):
+    # NOTE: field is named `signal_name` (not `signal`) to keep KV documents
+    # compatible with rows written by earlier versions. DiffEntry uses
+    # `.signal`; do not rename either without a KV migration.
     signal_name: str  # matches DiffEntry.signal
     weight: float = 1.0
     confirmed_count: int = 0
     false_positive_count: int = 0
-    last_updated: Optional[datetime] = None
+    last_updated: datetime | None = None
+    # Memory loop: track how often we see this signal and when it last fired.
+    # Used by `anchor learned` and by weight decay (older weights drift back to 1.0).
+    total_appearances: int = 0
+    last_used_at: datetime | None = None
 
 
 class NarratorResponse(BaseModel):
     summary: str
-    hypothesis: Optional[str] = None
-    drill_in_spl: Optional[str] = None
+    hypothesis: str | None = None
+    drill_in_spl: str | None = None

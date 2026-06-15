@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4.0"]
+# Alibaba Cloud integrations (OSS backup for KV memory).
+# Install with: pip install -e '.[alibaba]'
+alibaba = ["oss2>=2.18.0"]
 
 [project.scripts]
 anchor = "anchor.cli:cli"

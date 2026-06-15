@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import getpass
 import json
+import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .models import Anchor, DiffEntry, DriftRecord, Fingerprint, Outcome, Scope, SignalWeight, TimeRange
 from .splunk_client import ensure_collections, kv_all, kv_get, kv_insert, kv_query, kv_update
@@ -104,9 +105,20 @@ WEIGHT_DELTA = 0.1
 WEIGHT_MIN = 0.1
 WEIGHT_MAX = 3.0
 
+# Memory decay: weights drift halfway back to 1.0 every `DECAY_HALF_LIFE_DAYS`
+# of inactivity. Implements Track-1's "timely forgetting of outdated information".
+DECAY_HALF_LIFE_DAYS = 30.0
+DECAY_SKIP_RECENT_HOURS = 24.0  # don't decay weights touched in last 24h
+DECAY_MIN_INTERVAL_HOURS = 1.0  # re-run decay at most once per hour per process
+
+# Module-level guard so long-running processes still re-decay periodically
+# without doing it on every single get_weights() call.
+_last_decay_run: datetime | None = None
+
 
 def get_weights() -> dict[str, SignalWeight]:
     ensure_collections()
+    _maybe_decay_weights()
     out: dict[str, SignalWeight] = {}
     for d in kv_all("signal_weights"):
         try:
@@ -115,6 +127,97 @@ def get_weights() -> dict[str, SignalWeight]:
         except Exception:
             continue
     return out
+
+
+def _maybe_decay_weights() -> None:
+    """Run decay_weights at most once per DECAY_MIN_INTERVAL_HOURS per process."""
+    global _last_decay_run
+    now = datetime.now(timezone.utc)
+    if _last_decay_run is not None:
+        elapsed = (now - _last_decay_run).total_seconds() / 3600.0
+        if elapsed < DECAY_MIN_INTERVAL_HOURS:
+            return
+    _last_decay_run = now
+    try:
+        decay_weights(now)
+    except Exception as e:
+        # Decay is best-effort — never fail callers because of it.
+        # Emit a breadcrumb so operators can spot a persistent failure.
+        print(f"anchor: weight decay skipped ({e!r})", file=sys.stderr)
+
+
+def decay_weights(now: datetime, half_life_days: float = DECAY_HALF_LIFE_DAYS) -> int:
+    """Pull each weight halfway back to 1.0 per `half_life_days` of inactivity.
+
+    Skips weights touched within the last DECAY_SKIP_RECENT_HOURS (so freshly
+    learned weights aren't immediately washed out). Returns the count of
+    weights modified. Pure-ish: no logging, no LLM, no Splunk SPL.
+    """
+    if half_life_days <= 0:
+        return 0
+    skip_cutoff = now - timedelta(hours=DECAY_SKIP_RECENT_HOURS)
+    touched = 0
+    for d in kv_all("signal_weights"):
+        try:
+            w = SignalWeight.model_validate(d)
+        except Exception:
+            continue
+        if w.last_updated and w.last_updated > skip_cutoff:
+            continue
+        if w.last_updated is None:
+            continue
+        age_days = (now - w.last_updated).total_seconds() / 86400.0
+        factor = 0.5 ** (age_days / half_life_days)
+        new_weight = 1.0 + (w.weight - 1.0) * factor
+        if abs(new_weight - w.weight) < 1e-6:
+            continue
+        w.weight = max(WEIGHT_MIN, min(WEIGHT_MAX, new_weight))
+        w.last_updated = now
+        key = d.get("_key") or w.signal_name
+        kv_update("signal_weights", key, json.loads(w.model_dump_json()))
+        touched += 1
+    return touched
+
+
+def bump_appearance(signals: list[str], now: datetime | None = None) -> None:
+    """Record that these signals appeared in a compare's top_diffs.
+
+    Creates a weight row at 1.0 for unseen signals so `anchor learned` can
+    show "we've watched this N times but never confirmed/denied it".
+
+    Implementation note: pulls every existing weight in a single ``kv_all``
+    call, then issues at most one write per signal. The old per-signal
+    ``kv_query`` did N round-trips against Splunk; on a remote ECS that
+    visibly stalled ``anchor compare``.
+    """
+    if not signals:
+        return
+    now = now or datetime.now(timezone.utc)
+    existing: dict[str, tuple[str | None, SignalWeight]] = {}
+    for d in kv_all("signal_weights"):
+        try:
+            w = SignalWeight.model_validate(d)
+        except Exception:
+            continue
+        existing[w.signal_name] = (d.get("_key"), w)
+    for name in signals:
+        if name in existing:
+            key, w = existing[name]
+            w.total_appearances += 1
+            w.last_used_at = now
+            if key:
+                kv_update("signal_weights", key, json.loads(w.model_dump_json()))
+        else:
+            w = SignalWeight(
+                signal_name=name,
+                weight=1.0,
+                total_appearances=1,
+                last_used_at=now,
+                last_updated=now,
+            )
+            kv_insert("signal_weights", json.loads(w.model_dump_json()))
+            # Track so duplicate signals in one batch don't double-insert.
+            existing[name] = (None, w)
 
 
 def _upsert_weight(name: str, delta: float, confirmed_inc: int, fp_inc: int) -> SignalWeight:
@@ -141,7 +244,12 @@ def _upsert_weight(name: str, delta: float, confirmed_inc: int, fp_inc: int) -> 
 
 
 def apply_feedback(drift: DriftRecord, outcome: Outcome) -> None:
-    """Update signal weights for each diff in the drift based on outcome."""
+    """Update signal weights for each diff in the drift based on outcome.
+
+    Also opportunistically runs weight decay so long-running processes (e.g. a
+    daemon issuing many `feedback` calls) still age out stale opinions.
+    """
+    _maybe_decay_weights()
     if outcome == "resolved":
         for d in drift.top_diffs:
             _upsert_weight(d.signal, +WEIGHT_DELTA, confirmed_inc=1, fp_inc=0)
@@ -149,6 +257,48 @@ def apply_feedback(drift: DriftRecord, outcome: Outcome) -> None:
         for d in drift.top_diffs:
             _upsert_weight(d.signal, -WEIGHT_DELTA, confirmed_inc=0, fp_inc=1)
     # unknown / ongoing → no weight change
+
+
+# ---- Memory recall ---------------------------------------------------------
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a and not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
+
+def recall_similar_drifts(
+    current_signals: list[str],
+    *,
+    k: int = 3,
+    min_similarity: float = 0.15,
+    outcomes: tuple[Outcome, ...] = ("resolved", "false_positive"),
+) -> list[tuple[DriftRecord, float]]:
+    """Return up to k past drifts most similar to `current_signals` by Jaccard
+    overlap of signals in their top_diffs.
+
+    Only considers drifts whose outcome ∈ `outcomes` (default: resolved or
+    false_positive — i.e. drifts with confirmed ground truth). This is the
+    "recalling critical memories within limited context windows" capability
+    for the MemoryAgent track.
+    """
+    if not current_signals:
+        return []
+    current_set = set(current_signals)
+    scored: list[tuple[DriftRecord, float]] = []
+    for drift in list_drifts(limit=500):
+        if drift.outcome not in outcomes:
+            continue
+        past_signals = {d.signal for d in drift.top_diffs}
+        sim = _jaccard(current_set, past_signals)
+        if sim < min_similarity:
+            continue
+        scored.append((drift, sim))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:k]
 
 
 # ---- Blind spots -----------------------------------------------------------

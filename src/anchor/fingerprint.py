@@ -1,6 +1,7 @@
 """Fingerprint extractor — runs SPL against a window and produces a structured summary."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from .models import Fingerprint, LogPattern, MetricStats, Scope
@@ -9,16 +10,29 @@ from .splunk_client import run_search
 TOP_PATTERNS = 50
 TOP_HOSTS = 20
 
+# Allow only Splunk-safe identifier chars in scope tokens (indexes, sourcetypes,
+# metric field names). The CLI is the trust boundary, but a defence-in-depth
+# whitelist closes the door on SPL injection via --index 'foo;|...'.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_*\-]+$")
+
+
+def _safe_token(s: str, kind: str) -> str:
+    if not _TOKEN_RE.match(s):
+        raise ValueError(f"unsafe {kind} token: {s!r}")
+    return s
+
+
 # ---- SPL builders ----------------------------------------------------------
 
 
 def _index_filter(scope: Scope) -> str:
-    idx = " OR ".join(f"index={i}" for i in scope.indexes) or "index=main"
-    if scope.sourcetypes:
-        st = " OR ".join(f"sourcetype={s}" for s in scope.sourcetypes)
+    indexes = [_safe_token(i, "index") for i in scope.indexes] or ["main"]
+    sourcetypes = [_safe_token(s, "sourcetype") for s in scope.sourcetypes]
+    idx = " OR ".join(f"index={i}" for i in indexes)
+    if sourcetypes:
+        st = " OR ".join(f"sourcetype={s}" for s in sourcetypes)
         return f"({idx}) ({st})"
     return f"({idx})"
-
 
 def _spl_volume(scope: Scope) -> str:
     base = _index_filter(scope)
@@ -60,10 +74,11 @@ def _spl_metrics(scope: Scope, metric_fields: list[str]) -> str:
     base = _index_filter(scope)
     if not metric_fields:
         return ""
+    safe = [_safe_token(m, "metric") for m in metric_fields]
     aggs = ", ".join(
         f"perc50({m}) as {m}_p50, perc95({m}) as {m}_p95, perc99({m}) as {m}_p99, "
         f"avg({m}) as {m}_mean, stdev({m}) as {m}_stddev"
-        for m in metric_fields
+        for m in safe
     )
     return f"{base} | stats {aggs}"
 
