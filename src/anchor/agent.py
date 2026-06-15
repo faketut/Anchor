@@ -9,12 +9,14 @@ from .fingerprint import extract_fingerprint
 from .memory import (
     apply_feedback,
     bump_appearance,
+    delete_drift,
     get_anchor,
     get_drift,
     get_weights,
     latest_anchor,
     list_anchors,
     list_drifts,
+    purge_drifts,
     recall_similar_drifts,
     recurring_blind_spots,
     save_anchor,
@@ -131,3 +133,16 @@ def learned_signals() -> list[SignalWeight]:
     """All known signal weights, sorted by deviation from the 1.0 default (most learned first)."""
     weights = get_weights().values()
     return sorted(weights, key=lambda w: abs(w.weight - 1.0), reverse=True)
+
+
+# ---- DESTRUCTIVE ------------------------------------------------------------
+
+
+def remove_drift(drift_id: str) -> bool:
+    """Delete a single drift record. Returns True if it existed."""
+    return delete_drift(drift_id)
+
+
+def remove_drifts(outcome: Outcome | None = None) -> int:
+    """Bulk-delete drift records, optionally filtered by outcome. Returns count removed."""
+    return purge_drifts(outcome=outcome)

@@ -66,3 +66,47 @@ def test_compare_rejects_inverted_window(monkeypatch) -> None:
     )
     assert result.exit_code != 0
     assert "must be strictly after" in result.output
+
+
+def test_delete_drift_requires_confirmation(monkeypatch) -> None:
+    """Without --yes the destructive op must prompt and abort on 'n'."""
+    monkeypatch.setattr(cli_module, "_resolve_drift_id", lambda p: "abcd1234efgh")
+    called = {"n": 0}
+    monkeypatch.setattr(cli_module.agent, "remove_drift", lambda _id: called.__setitem__("n", called["n"] + 1) or True)
+
+    result = CliRunner().invoke(cli_module.cli, ["delete-drift", "abcd"], input="n\n")
+    assert result.exit_code != 0  # aborted
+    assert called["n"] == 0
+
+
+def test_delete_drift_yes_flag_skips_prompt(monkeypatch) -> None:
+    monkeypatch.setattr(cli_module, "_resolve_drift_id", lambda p: "abcd1234efgh")
+    monkeypatch.setattr(cli_module.agent, "remove_drift", lambda _id: True)
+    result = CliRunner().invoke(cli_module.cli, ["delete-drift", "abcd", "--yes"])
+    assert result.exit_code == 0
+    assert "Deleted" in result.output
+
+
+def test_purge_drifts_filters_by_outcome(monkeypatch) -> None:
+    """`--outcome unknown` must be threaded through to agent.remove_drifts."""
+    seen = {}
+    monkeypatch.setattr(
+        cli_module.agent, "remove_drifts", lambda outcome=None: seen.update(outcome=outcome) or 7
+    )
+    result = CliRunner().invoke(
+        cli_module.cli, ["purge-drifts", "--outcome", "unknown", "--yes"]
+    )
+    assert result.exit_code == 0
+    assert seen["outcome"] == "unknown"
+    assert "Removed 7" in result.output
+
+
+def test_purge_drifts_without_outcome_purges_all(monkeypatch) -> None:
+    seen = {}
+    monkeypatch.setattr(
+        cli_module.agent, "remove_drifts", lambda outcome=None: seen.update(outcome=outcome) or 3
+    )
+    result = CliRunner().invoke(cli_module.cli, ["purge-drifts", "--yes"])
+    assert result.exit_code == 0
+    assert seen["outcome"] is None
+    assert "ALL" in result.output

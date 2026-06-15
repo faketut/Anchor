@@ -346,6 +346,52 @@ def blind_spots(min_count: int) -> None:
     console.print(t)
 
 
+# ---- DESTRUCTIVE (remove history) ------------------------------------------
+
+_OUTCOMES = ["resolved", "ongoing", "false_positive", "unknown"]
+
+
+@cli.command("delete-drift")
+@click.argument("drift_id")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def delete_drift_cmd(drift_id: str, yes: bool) -> None:
+    """Delete a single drift record. DRIFT_ID may be a full id or a unique prefix."""
+    full_id = _resolve_drift_id(drift_id)
+    if not yes:
+        click.confirm(f"Delete drift {full_id[:8]}? This cannot be undone.", abort=True)
+    if agent.remove_drift(full_id):
+        console.print(f"[green]Deleted[/green] drift {full_id[:8]}.")
+    else:
+        console.print(f"[yellow]No drift {full_id[:8]} found.[/yellow]")
+
+
+@cli.command("purge-drifts")
+@click.option(
+    "--outcome",
+    type=click.Choice(_OUTCOMES),
+    default=None,
+    help="Only purge drifts with this outcome. Omit to purge ALL drifts.",
+)
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def purge_drifts_cmd(outcome: str | None, yes: bool) -> None:
+    """Bulk-delete drift history entries.
+
+    Examples:
+        anchor purge-drifts --outcome unknown      # clear noisy unconfirmed runs
+        anchor purge-drifts --outcome false_positive --yes
+        anchor purge-drifts --yes                   # nuke entire drift history
+    """
+    label = f"outcome={outcome}" if outcome else "ALL"
+    if not yes:
+        click.confirm(
+            f"Permanently delete every drift record matching {label}? "
+            "This will also erase the agent's memory of those past incidents.",
+            abort=True,
+        )
+    removed = agent.remove_drifts(outcome=outcome)  # type: ignore[arg-type]
+    console.print(f"[green]Removed[/green] {removed} drift record(s) ({label}).")
+
+
 # ---- LEARNED (memory introspection) ----------------------------------------
 
 

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from .models import Anchor, DiffEntry, DriftRecord, Fingerprint, Outcome, Scope, SignalWeight, TimeRange
-from .splunk_client import ensure_collections, kv_all, kv_get, kv_insert, kv_query, kv_update
+from .splunk_client import ensure_collections, kv_all, kv_delete, kv_get, kv_insert, kv_query, kv_update
 
 # ---- Anchors ---------------------------------------------------------------
 
@@ -97,6 +97,28 @@ def list_drifts(*, outcome: Outcome | None = None, limit: int = 50) -> list[Drif
     drifts = [DriftRecord.model_validate(d) for d in docs]
     drifts.sort(key=lambda r: r.timestamp, reverse=True)
     return drifts[:limit]
+
+
+def delete_drift(drift_id: str) -> bool:
+    """Delete a single drift record by id. Returns True if a row was removed."""
+    if get_drift(drift_id) is None:
+        return False
+    kv_delete("drift_history", drift_id)
+    return True
+
+
+def purge_drifts(*, outcome: Outcome | None = None) -> int:
+    """Delete all drift records, optionally filtered by outcome. Returns count removed."""
+    query = {"outcome": outcome} if outcome else None
+    docs = kv_query("drift_history", query)
+    removed = 0
+    for d in docs:
+        key = d.get("_key")
+        if not key:
+            continue
+        kv_delete("drift_history", key)
+        removed += 1
+    return removed
 
 
 # ---- Signal weights --------------------------------------------------------
