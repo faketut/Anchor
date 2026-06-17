@@ -171,6 +171,37 @@ by ID* and proposes a tighter hypothesis because it has prior ground truth.
 
 ---
 
+### Scene 4b · Sophisticated Qwen integration *(optional, 20–30 s)*
+
+*Skip this scene if you're already at 2:50 — the basic compare is the
+story. Include it only if you want to showcase the function-calling
+planner.*
+
+**Narration:**
+> "And when I want depth instead of a one-shot narration, I add `--deep`.
+> Now Qwen's function-calling planner takes the wheel — it can recall
+> past drifts, fetch their full records, run its own SPL — until it
+> converges on a hypothesis. Every step prints live."
+
+**Run:**
+```bash
+anchor compare --deep --max-steps 4 \
+  --from <DRIFT2_FROM> --to <DRIFT2_TO> \
+  --focus "checkout slowness — get to root cause"
+```
+
+Point to:
+1. **Live step trace** — cyan tool names (`recall_similar_drifts`,
+   `get_drift_details`, `run_spl`) as Qwen issues them.
+2. **Investigation footer** — the final structured hypothesis with
+   `evidence[]` citing each step.
+
+Optional one-liner: *"Same backend is also exposed as an MCP server
+(`anchor-mcp`) and as a Qwen Application Center Custom Skill — see the
+deploy/ folder."*
+
+---
+
 ### Scene 5 · The differentiator (2:50 – 3:15)
 
 **Narration over the architecture diagram** (switch tab to the System

@@ -103,9 +103,23 @@ sequenceDiagram
 
 - **`anchor capture`** — fingerprint a window (volume, log templates, error rates, metric percentiles, top hosts) and persist to Splunk KV Store.
 - **`anchor compare`** — diff a target window against an anchor; LLM-narrated report with a ranked top-diffs table, suggested drill-in SPL, **and a "recalled past incidents" table** showing the most-similar resolved drifts the agent pulled into the LLM context.
+- **`anchor compare --deep`** — same compare, then drive Qwen's *function-calling* planner through a ReAct loop (recall → drill-in SPL → re-recall → conclude) and print each step live. Default cap 6 tool calls; tunable with `--max-steps`.
 - **`anchor feedback`** — record outcome; signal weights auto-adjust to re-rank future severity (confirmed signals get +10%, false positives get −20%).
 - **`anchor learned`** — introspect Anchor's memory: which signals have been re-weighted, which are decaying back to neutral.
 - **`anchor history`** / **`anchor blind-spots`** — surface past drift records and signals that recur unresolved.
+- **`anchor delete-drift <id>`** / **`anchor purge-drifts [--outcome ...]`** — prune history (e.g. after a stale demo) without touching anchors or weights.
+
+### Qwen Cloud integration surfaces
+
+Anchor exposes its memory loop on **three** Qwen-compatible surfaces from a single backend — so the same SPL/KV layer drives the CLI, conversational MCP clients, and Qwen Cloud's Application Center.
+
+| Surface | Entrypoint | When to use |
+|---|---|---|
+| **CLI** | `anchor …` | On-call engineer at a terminal. |
+| **MCP server (stdio)** | `pip install -e '.[mcp]' && anchor-mcp` | Drive Anchor from Claude Desktop, Cursor, or any MCP client — 8 tools (`anchor.compare`, `anchor.deep_compare`, `anchor.recall`, …). |
+| **Custom Skill (HTTP)** | `pip install -e '.[skill]' && uvicorn anchor.skill_server:app` | Register the [`deploy/qwen_skill/anchor-skill.yaml`](deploy/qwen_skill/anchor-skill.yaml) OpenAPI spec in Qwen Cloud → Application Center; bearer-auth shim runs on ECS. |
+
+Semantic recall (Qwen `text-embedding-v3`) is opt-in: set `ANCHOR_SEMANTIC_RECALL=1` and embeddings are persisted alongside each drift, so future recalls use cosine similarity in addition to Jaccard.
 
 ### MemoryAgent alignment
 
@@ -161,6 +175,11 @@ anchor capture --name "Healthy Week" \
   --index main --metric latency_ms
 
 anchor compare \
+  --from 2026-06-02T00:00:00 --to 2026-06-03T00:00:00 \
+  --focus "checkout slowness"
+
+# Same window, but let Qwen's function-calling planner drill in with tools.
+anchor compare --deep \
   --from 2026-06-02T00:00:00 --to 2026-06-03T00:00:00 \
   --focus "checkout slowness"
 
