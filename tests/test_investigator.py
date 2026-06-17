@@ -213,6 +213,46 @@ def test_investigate_rejects_zero_max_steps():
         investigator.investigate(_fake_compare_result(), max_steps=0)
 
 
+def test_investigate_fires_step_callback_in_order(monkeypatch):
+    """step_callback must be invoked once per step, in order, with the just-added step."""
+    rsps = iter(
+        [
+            _fake_rsp(
+                _fake_msg(
+                    tool_calls=[_fake_tool_call("list_recent_drifts", {}, "c1")]
+                )
+            ),
+            _fake_rsp(
+                _fake_msg(
+                    tool_calls=[
+                        _fake_tool_call(
+                            "recall_similar_drifts", {"signals": ["x"]}, "c2"
+                        )
+                    ]
+                )
+            ),
+            _fake_rsp(_fake_msg(content=json.dumps({"summary": "done"}))),
+        ]
+    )
+
+    class FakeClient:
+        chat = SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kw: next(rsps))
+        )
+
+    monkeypatch.setattr(investigator, "_make_client", lambda p: (FakeClient(), "fake-model"))
+    monkeypatch.setattr(investigator, "_dispatch", lambda name, args: "[]")
+
+    seen: list[tuple[int, str]] = []
+    result = investigator.investigate(
+        _fake_compare_result(),
+        max_steps=5,
+        step_callback=lambda s: seen.append((s.n, s.tool)),
+    )
+    assert seen == [(1, "list_recent_drifts"), (2, "recall_similar_drifts")]
+    assert len(result.steps) == 2
+
+
 # ---- dispatch tests --------------------------------------------------------
 
 

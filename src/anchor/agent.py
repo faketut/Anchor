@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import NamedTuple, TYPE_CHECKING
+from typing import Callable, NamedTuple, TYPE_CHECKING
 
 from .diff import diff_all
 from .fingerprint import extract_fingerprint
@@ -27,7 +27,7 @@ from .models import Anchor, DiffEntry, DriftRecord, Outcome, Scope, SignalWeight
 from .narrator import narrate
 
 if TYPE_CHECKING:  # pragma: no cover  — type-only import
-    from .models import InvestigationResult
+    from .models import InvestigationResult, InvestigationStep
 
 
 class CompareResult(NamedTuple):
@@ -162,9 +162,13 @@ def deep_compare(
     metric_fields: list[str] | None = None,
     provider: str | None = None,
     max_steps: int | None = None,
+    step_callback: "Callable[[InvestigationStep], None] | None" = None,
 ) -> tuple[CompareResult, "InvestigationResult"]:
     """Run a normal `compare`, then drive a function-calling planner over the
     result. Returns the original CompareResult alongside the investigation.
+
+    `step_callback` is forwarded to the planner so callers can render each
+    reasoning step as it lands (useful for CLI live trace).
 
     Imported lazily to avoid a hard dependency on `openai` for the base flow.
     """
@@ -174,5 +178,7 @@ def deep_compare(
         anchor_id, start, end,
         focus=focus, metric_fields=metric_fields, provider=provider,
     )
-    invest = investigate(base, provider=provider, max_steps=max_steps)
+    invest = investigate(
+        base, provider=provider, max_steps=max_steps, step_callback=step_callback,
+    )
     return base, invest

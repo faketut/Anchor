@@ -233,6 +233,19 @@ def compare(
 
     invest = None
     if deep:
+        # Live-print each planner step as it lands so the demo doesn't stare
+        # at a blank terminal for 20s while the model thinks. Each call to
+        # the LLM blocks; the callback fires synchronously between calls.
+        def _on_step(step) -> None:
+            args_str = ", ".join(
+                f"{k}={_short_repr(v)}" for k, v in (step.args or {}).items()
+            )
+            console.print(
+                f"  [dim]step {step.n}[/dim] [cyan]{step.tool}[/cyan]"
+                f"({args_str}) [dim]\u2192 {len(step.observation)} chars[/dim]"
+            )
+
+        console.print("[dim]Running deep investigation\u2026[/dim]")
         result, invest = agent.deep_compare(
             resolved_id,
             start_dt,
@@ -241,6 +254,7 @@ def compare(
             metric_fields=list(metrics) or None,
             provider=llm,
             max_steps=max_steps,
+            step_callback=_on_step,
         )
     else:
         result = agent.compare(

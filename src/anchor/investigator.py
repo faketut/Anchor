@@ -14,11 +14,13 @@ is given one last turn to finalize using only the observations gathered.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 from .agent import CompareResult
 from .config import CONFIG
 from .models import InvestigationResult, InvestigationStep
+
+StepCallback = Callable[[InvestigationStep], None]
 
 # Bump when SYSTEM_PROMPT, TOOLS, or _initial_payload schema changes.
 PLANNER_VERSION = 1
@@ -347,8 +349,16 @@ def investigate(
     *,
     provider: str | None = None,
     max_steps: int | None = None,
+    step_callback: StepCallback | None = None,
 ) -> InvestigationResult:
-    """Drive a function-calling investigation on top of an initial compare."""
+    """Drive a function-calling investigation on top of an initial compare.
+
+    If `step_callback` is given it's invoked synchronously after each
+    InvestigationStep is appended, so callers can stream the reasoning trace
+    to a terminal (or any other sink) instead of waiting for the final answer.
+    Exceptions raised by the callback are deliberately not caught — they
+    indicate a programmer error in the consumer, not a planner failure.
+    """
     max_steps = max_steps if max_steps is not None else CONFIG.investigate_max_steps
     if max_steps < 1:
         raise ValueError("max_steps must be >= 1")
@@ -391,15 +401,16 @@ def investigate(
                     {"error": f"{type(exc).__name__}: {exc}"}, default=str
                 )
             observation = _truncate(observation)
-            steps.append(
-                InvestigationStep(
-                    n=step_num,
-                    thought=thought,
-                    tool=name,
-                    args=args,
-                    observation=observation,
-                )
+            step = InvestigationStep(
+                n=step_num,
+                thought=thought,
+                tool=name,
+                args=args,
+                observation=observation,
             )
+            steps.append(step)
+            if step_callback is not None:
+                step_callback(step)
             messages.append(
                 {
                     "role": "tool",

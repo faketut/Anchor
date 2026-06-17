@@ -79,6 +79,11 @@ class DriftRecord(BaseModel):
     engineer_confirmed_reason: str | None = None
     outcome: Outcome = "unknown"
     suggested_spl: str | None = None
+    # Optional: precomputed embedding of the drift's signal set (Qwen
+    # text-embedding-v3 = 1024 dims). Populated when ANCHOR_SEMANTIC_RECALL=1.
+    # Stored in the KV row so semantic recall has O(N) cosine instead of
+    # re-embedding every past drift on every compare.
+    signal_embedding: list[float] | None = None
 
 
 class SignalWeight(BaseModel):

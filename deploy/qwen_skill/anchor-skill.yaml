@@ -1,0 +1,285 @@
+openapi: 3.0.3
+info:
+  title: Anchor SRE MemoryAgent
+  description: |
+    Capture a healthy baseline (`anchor`) and diff any later time window
+    against it. Anchor is an observability MemoryAgent: it accumulates
+    confirmed root causes (`feedback`) and recalls similar past incidents
+    on future drifts. Backed by Splunk KV Store + Qwen.
+
+    Register this manifest as a Custom Skill on Qwen Cloud Application
+    Center so users can drive Anchor directly from Qwen Chat:
+      * "Capture today's healthy baseline as 'Q3 normal'"
+      * "Compare yesterday 10pm to 11pm against the latest anchor"
+      * "Mark drift abc12 as resolved — payment-svc deploy rollback"
+  version: 1.0.0
+  license:
+    name: MIT
+servers:
+  - url: https://YOUR-ECS-PUBLIC-IP-OR-DOMAIN
+    description: Anchor backend on Alibaba Cloud ECS (see deploy/alibaba-cloud.md)
+
+paths:
+  /anchors:
+    get:
+      operationId: list_anchors
+      summary: List captured healthy baselines.
+      responses:
+        '200':
+          description: All anchors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Anchor'
+    post:
+      operationId: capture_anchor
+      summary: Capture a new healthy baseline from a time window.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, start, end]
+              properties:
+                name: { type: string, example: 'Healthy Week' }
+                start: { type: string, format: date-time }
+                end: { type: string, format: date-time }
+                indexes:
+                  type: array
+                  items: { type: string }
+                  default: [main]
+                sourcetypes:
+                  type: array
+                  items: { type: string }
+                metrics:
+                  type: array
+                  items: { type: string }
+                  description: Numeric field names for percentile extraction.
+      responses:
+        '200':
+          description: New anchor created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Anchor' }
+
+  /compare:
+    post:
+      operationId: compare
+      summary: Diff a time window against an anchor and narrate the drift.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [start, end]
+              properties:
+                anchor_id:
+                  type: string
+                  description: Anchor id or unique prefix; omit for latest.
+                start: { type: string, format: date-time }
+                end: { type: string, format: date-time }
+                focus:
+                  type: string
+                  description: Optional natural-language focus hint.
+                deep:
+                  type: boolean
+                  default: false
+                  description: |
+                    Run function-calling planner on top of the diff to deepen the
+                    investigation (recall similar incidents, run follow-up SPL).
+                provider:
+                  type: string
+                  enum: [qwen, gemini]
+      responses:
+        '200':
+          description: Drift report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompareResponse' }
+
+  /recall:
+    post:
+      operationId: recall_similar
+      summary: Recall past incidents whose signals overlap the given set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signals]
+              properties:
+                signals:
+                  type: array
+                  items: { type: string }
+                k: { type: integer, default: 3, minimum: 1, maximum: 10 }
+                min_similarity: { type: number, default: 0.15 }
+      responses:
+        '200':
+          description: Ranked past incidents (resolved or false_positive only)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    drift: { $ref: '#/components/schemas/DriftRecord' }
+                    similarity: { type: number, minimum: 0, maximum: 1 }
+
+  /feedback:
+    post:
+      operationId: submit_feedback
+      summary: Record outcome on a past drift (drives signal-weight learning).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [drift_id, outcome]
+              properties:
+                drift_id: { type: string }
+                outcome:
+                  type: string
+                  enum: [resolved, ongoing, false_positive, unknown]
+                reason:
+                  type: string
+                  description: Confirmed root cause, free-text.
+      responses:
+        '200':
+          description: Updated drift record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriftRecord' }
+
+  /history:
+    get:
+      operationId: list_history
+      summary: List recent drift records.
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, default: 20 } }
+        - { in: query, name: unresolved_only, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Recent drifts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DriftRecord' }
+
+  /learned:
+    get:
+      operationId: learned_signals
+      summary: View Anchor's learned per-signal weights (memory introspection).
+      responses:
+        '200':
+          description: Signal weight table
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SignalWeight' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Required in production. Issue a static token via `ANCHOR_SKILL_TOKEN`
+        env var on the FastAPI shim and configure it in Qwen Application
+        Center → Skill → Authentication.
+  schemas:
+    Anchor:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        time_range:
+          type: object
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+    DiffEntry:
+      type: object
+      properties:
+        signal: { type: string }
+        kind: { type: string, enum: [volume, template, metric] }
+        anchor_val: {}
+        current_val: {}
+        delta_pct: { type: number, nullable: true }
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH] }
+        note: { type: string }
+    DriftRecord:
+      type: object
+      properties:
+        id: { type: string }
+        timestamp: { type: string, format: date-time }
+        anchor_id: { type: string }
+        top_diffs:
+          type: array
+          items: { $ref: '#/components/schemas/DiffEntry' }
+        outcome:
+          type: string
+          enum: [resolved, ongoing, false_positive, unknown]
+        engineer_confirmed_reason: { type: string, nullable: true }
+        suggested_spl: { type: string, nullable: true }
+    SignalWeight:
+      type: object
+      properties:
+        signal_name: { type: string }
+        weight: { type: number }
+        confirmed_count: { type: integer }
+        false_positive_count: { type: integer }
+        total_appearances: { type: integer }
+        last_used_at: { type: string, format: date-time, nullable: true }
+    CompareResponse:
+      type: object
+      properties:
+        anchor: { $ref: '#/components/schemas/Anchor' }
+        drift: { $ref: '#/components/schemas/DriftRecord' }
+        summary: { type: string }
+        hypothesis: { type: string, nullable: true }
+        drill_in_spl: { type: string, nullable: true }
+        top_diffs:
+          type: array
+          items: { $ref: '#/components/schemas/DiffEntry' }
+        recalled:
+          type: array
+          items:
+            type: object
+            properties:
+              drift: { $ref: '#/components/schemas/DriftRecord' }
+              similarity: { type: number }
+        investigation:
+          type: object
+          nullable: true
+          description: Only present when deep=true.
+          properties:
+            summary: { type: string }
+            hypothesis: { type: string, nullable: true }
+            evidence:
+              type: array
+              items: { type: string }
+            confidence: { type: number, nullable: true }
+            steps:
+              type: array
+              items:
+                type: object
+                properties:
+                  n: { type: integer }
+                  tool: { type: string }
+                  args: { type: object }
+                  observation: { type: string }
+            truncated: { type: boolean }
+
+security:
+  - bearerAuth: []

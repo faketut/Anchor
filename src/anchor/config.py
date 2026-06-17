@@ -59,5 +59,15 @@ class Config:
         default_factory=lambda: int(os.getenv("ANCHOR_INVESTIGATE_MAX_STEPS", "6"))
     )
 
+    # Embedding model for semantic recall (Qwen text-embedding-v3 on DashScope).
+    # If empty or recall fails, recall_similar_drifts falls back to Jaccard
+    # over signal sets.
+    qwen_embed_model: str = field(
+        default_factory=lambda: os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
+    )
+    semantic_recall: bool = field(
+        default_factory=lambda: _bool("ANCHOR_SEMANTIC_RECALL", False)
+    )
+
 
 CONFIG = Config()

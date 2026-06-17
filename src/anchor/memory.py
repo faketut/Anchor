@@ -7,6 +7,8 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from .config import CONFIG
+from .embedding import cosine, embed_signals
 from .models import Anchor, DiffEntry, DriftRecord, Fingerprint, Outcome, Scope, SignalWeight, TimeRange
 from .splunk_client import ensure_collections, kv_all, kv_delete, kv_get, kv_insert, kv_query, kv_update
 
@@ -59,6 +61,11 @@ def save_drift(
     suggested_spl: str | None,
 ) -> DriftRecord:
     ensure_collections()
+    embedding: list[float] | None = None
+    if CONFIG.semantic_recall:
+        # Best-effort: embed the signal set so future recall can do cosine
+        # instead of Jaccard. embed_signals already swallows failures.
+        embedding = embed_signals([d.signal for d in top_diffs])
     rec = DriftRecord(
         id=str(uuid.uuid4()),
         timestamp=datetime.now(timezone.utc),
@@ -68,6 +75,7 @@ def save_drift(
         agent_hypothesis=hypothesis,
         suggested_spl=suggested_spl,
         outcome="unknown",
+        signal_embedding=embedding,
     )
     doc = json.loads(rec.model_dump_json())
     doc["_key"] = rec.id
@@ -299,8 +307,16 @@ def recall_similar_drifts(
     min_similarity: float = 0.15,
     outcomes: tuple[Outcome, ...] = ("resolved", "false_positive"),
 ) -> list[tuple[DriftRecord, float]]:
-    """Return up to k past drifts most similar to `current_signals` by Jaccard
-    overlap of signals in their top_diffs.
+    """Return up to k past drifts most similar to `current_signals`.
+
+    Ranking strategy:
+      * If CONFIG.semantic_recall is on AND the embedding call succeeds for
+        the current signals AND at least one past drift has a stored
+        signal_embedding, rank by cosine similarity. This catches semantic
+        matches that Jaccard misses (e.g. "PaymentGatewayTimeout" vs
+        "upstream payment failure").
+      * Otherwise (or as a fallback for drifts missing embeddings) rank by
+        Jaccard overlap of signals in top_diffs.
 
     Only considers drifts whose outcome ∈ `outcomes` (default: resolved or
     false_positive — i.e. drifts with confirmed ground truth). This is the
@@ -309,13 +325,27 @@ def recall_similar_drifts(
     """
     if not current_signals:
         return []
+
+    candidates = [d for d in list_drifts(limit=500) if d.outcome in outcomes]
+    if not candidates:
+        return []
+
     current_set = set(current_signals)
+    use_semantic = CONFIG.semantic_recall and any(d.signal_embedding for d in candidates)
+    current_embedding: list[float] | None = None
+    if use_semantic:
+        current_embedding = embed_signals(current_signals)
+        if current_embedding is None:
+            use_semantic = False  # embedding call failed — fall back
+
     scored: list[tuple[DriftRecord, float]] = []
-    for drift in list_drifts(limit=500):
-        if drift.outcome not in outcomes:
-            continue
-        past_signals = {d.signal for d in drift.top_diffs}
-        sim = _jaccard(current_set, past_signals)
+    for drift in candidates:
+        sim: float
+        if use_semantic and drift.signal_embedding:
+            sim = cosine(current_embedding, drift.signal_embedding)  # type: ignore[arg-type]
+        else:
+            past_signals = {d.signal for d in drift.top_diffs}
+            sim = _jaccard(current_set, past_signals)
         if sim < min_similarity:
             continue
         scored.append((drift, sim))

@@ -21,9 +21,15 @@ dev = ["pytest>=8.0", "ruff>=0.4.0"]
 # Alibaba Cloud integrations (OSS backup for KV memory).
 # Install with: pip install -e '.[alibaba]'
 alibaba = ["oss2>=2.18.0"]
+# Expose Anchor as an MCP server (stdio). Install with: pip install -e '.[mcp]'
+mcp = ["mcp>=1.2.0"]
+# HTTP shim for Qwen Application Center Custom Skill. Install with:
+#   pip install -e '.[skill]'
+skill = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
 
 [project.scripts]
 anchor = "anchor.cli:cli"
+anchor-mcp = "anchor.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
