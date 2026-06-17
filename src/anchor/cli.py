@@ -215,18 +215,42 @@ def show_anchor_cmd(anchor_id: str, raw: bool, top: int) -> None:
 @click.option("--focus", default=None, help="Optional natural-language focus hint.")
 @click.option("--metric", "metrics", multiple=True, default=(), help="Override metrics (default: anchor's).")
 @click.option("--llm", type=click.Choice(LLM_PROVIDERS), default=None, help="Override ANCHOR_LLM provider for this call.")
-def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metrics: tuple, llm: str | None) -> None:
+@click.option("--deep", is_flag=True, help="Run a function-calling planner on top of the diff to deepen the investigation.")
+@click.option("--max-steps", type=int, default=None, help="Step cap for --deep (default: ANCHOR_INVESTIGATE_MAX_STEPS).")
+def compare(
+    anchor_id: str | None,
+    start: str,
+    end: str,
+    focus: str | None,
+    metrics: tuple,
+    llm: str | None,
+    deep: bool,
+    max_steps: int | None,
+) -> None:
     """Compare a time window against an anchor and narrate the drift."""
     start_dt, end_dt = _parse_window(start, end)
     resolved_id = _resolve_anchor_id(anchor_id) if anchor_id else None
-    result = agent.compare(
-        resolved_id,
-        start_dt,
-        end_dt,
-        focus=focus,
-        metric_fields=list(metrics) or None,
-        provider=llm,
-    )
+
+    invest = None
+    if deep:
+        result, invest = agent.deep_compare(
+            resolved_id,
+            start_dt,
+            end_dt,
+            focus=focus,
+            metric_fields=list(metrics) or None,
+            provider=llm,
+            max_steps=max_steps,
+        )
+    else:
+        result = agent.compare(
+            resolved_id,
+            start_dt,
+            end_dt,
+            focus=focus,
+            metric_fields=list(metrics) or None,
+            provider=llm,
+        )
 
     console.rule(f"[bold]Drift report[/bold] — anchor '{result.anchor.name}' [dim]({result.drift.id})[/dim]")
     console.print(f"\n[bold]SUMMARY[/bold]\n{result.summary}\n")
@@ -283,6 +307,44 @@ def compare(anchor_id: str | None, start: str, end: str, focus: str | None, metr
         f"[dim]Mark outcome with:[/dim] "
         f"anchor feedback {result.drift.id} --outcome resolved|false_positive|ongoing --reason '...'"
     )
+
+    if invest is not None:
+        _render_investigation(invest)
+
+
+def _render_investigation(invest) -> None:
+    """Print the deep-investigation reasoning trace + final conclusion."""
+    console.rule("[bold]Deep investigation (function-calling planner)[/bold]")
+
+    if invest.steps:
+        t = Table(title=f"Reasoning trace ({len(invest.steps)} step(s))")
+        t.add_column("#", style="dim", justify="right")
+        t.add_column("tool", style="cyan")
+        t.add_column("args", overflow="fold")
+        t.add_column("observation", overflow="fold", style="dim")
+        for s in invest.steps:
+            args_str = ", ".join(f"{k}={_short_repr(v)}" for k, v in (s.args or {}).items())
+            obs = s.observation if len(s.observation) <= 220 else s.observation[:217] + "…"
+            t.add_row(str(s.n), s.tool, args_str or "—", obs)
+        console.print(t)
+    else:
+        console.print("[dim]Planner produced no tool calls — fell straight to a final answer.[/dim]")
+
+    conf = f" [dim](confidence={invest.confidence:.2f})[/dim]" if invest.confidence is not None else ""
+    trunc = " [yellow](step budget hit)[/yellow]" if invest.truncated else ""
+    console.print(f"\n[bold]REFINED SUMMARY[/bold]{conf}{trunc}\n{invest.summary}\n")
+    if invest.hypothesis:
+        console.print(f"[bold]REFINED HYPOTHESIS[/bold]\n{invest.hypothesis}\n")
+    if invest.evidence:
+        console.print("[bold]EVIDENCE CHAIN[/bold]")
+        for i, ev in enumerate(invest.evidence, 1):
+            console.print(f"  {i}. {ev}")
+        console.print()
+
+
+def _short_repr(v) -> str:
+    s = repr(v) if not isinstance(v, str) else v
+    return s if len(s) <= 60 else s[:57] + "…"
 
 
 # ---- FEEDBACK --------------------------------------------------------------

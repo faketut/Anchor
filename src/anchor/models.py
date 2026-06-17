@@ -100,3 +100,29 @@ class NarratorResponse(BaseModel):
     summary: str
     hypothesis: str | None = None
     drill_in_spl: str | None = None
+
+
+# ---- Deep investigation (function-calling planner) -------------------------
+
+
+class InvestigationStep(BaseModel):
+    """One iteration of the planner loop: the tool call it chose plus the
+    truncated observation that came back."""
+
+    n: int
+    thought: str | None = None  # planner's free-text rationale, if any
+    tool: str
+    args: dict
+    observation: str  # JSON-serialized + truncated for display
+
+
+class InvestigationResult(BaseModel):
+    """Output of a deep investigation: the full reasoning trace plus the
+    planner's final structured conclusion."""
+
+    steps: list[InvestigationStep] = Field(default_factory=list)
+    summary: str
+    hypothesis: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+    truncated: bool = False  # True if max_steps hit before a final answer

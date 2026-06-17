@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import NamedTuple
+from typing import NamedTuple, TYPE_CHECKING
 
 from .diff import diff_all
 from .fingerprint import extract_fingerprint
@@ -25,6 +25,9 @@ from .memory import (
 )
 from .models import Anchor, DiffEntry, DriftRecord, Outcome, Scope, SignalWeight, TimeRange
 from .narrator import narrate
+
+if TYPE_CHECKING:  # pragma: no cover  — type-only import
+    from .models import InvestigationResult
 
 
 class CompareResult(NamedTuple):
@@ -146,3 +149,30 @@ def remove_drift(drift_id: str) -> bool:
 def remove_drifts(outcome: Outcome | None = None) -> int:
     """Bulk-delete drift records, optionally filtered by outcome. Returns count removed."""
     return purge_drifts(outcome=outcome)
+
+
+# ---- DEEP COMPARE (function-calling investigation) -------------------------
+
+
+def deep_compare(
+    anchor_id: str | None,
+    start: datetime,
+    end: datetime,
+    focus: str | None = None,
+    metric_fields: list[str] | None = None,
+    provider: str | None = None,
+    max_steps: int | None = None,
+) -> tuple[CompareResult, "InvestigationResult"]:
+    """Run a normal `compare`, then drive a function-calling planner over the
+    result. Returns the original CompareResult alongside the investigation.
+
+    Imported lazily to avoid a hard dependency on `openai` for the base flow.
+    """
+    from .investigator import investigate  # local import: optional openai client
+
+    base = compare(
+        anchor_id, start, end,
+        focus=focus, metric_fields=metric_fields, provider=provider,
+    )
+    invest = investigate(base, provider=provider, max_steps=max_steps)
+    return base, invest

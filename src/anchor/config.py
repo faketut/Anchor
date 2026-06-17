@@ -49,5 +49,15 @@ class Config:
     splunk_llm_endpoint: str = field(default_factory=lambda: os.getenv("SPLUNK_LLM_ENDPOINT", ""))
     splunk_llm_model: str = field(default_factory=lambda: os.getenv("SPLUNK_LLM_MODEL", ""))
 
+    # Deep investigation (function-calling planner). Defaults to qwen-max-latest
+    # which has stronger reasoning + tool-use than qwen-plus. Falls back to
+    # qwen_model if the planner model name isn't set.
+    qwen_planner_model: str = field(
+        default_factory=lambda: os.getenv("QWEN_PLANNER_MODEL", "qwen-max-latest")
+    )
+    investigate_max_steps: int = field(
+        default_factory=lambda: int(os.getenv("ANCHOR_INVESTIGATE_MAX_STEPS", "6"))
+    )
+
 
 CONFIG = Config()
