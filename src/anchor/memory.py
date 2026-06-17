@@ -187,6 +187,7 @@ def decay_weights(now: datetime, half_life_days: float = DECAY_HALF_LIFE_DAYS) -
         return 0
     skip_cutoff = now - timedelta(hours=DECAY_SKIP_RECENT_HOURS)
     touched = 0
+    legacy_no_timestamp = 0
     for d in kv_all("signal_weights"):
         try:
             w = SignalWeight.model_validate(d)
@@ -195,6 +196,10 @@ def decay_weights(now: datetime, half_life_days: float = DECAY_HALF_LIFE_DAYS) -
         if w.last_updated and w.last_updated > skip_cutoff:
             continue
         if w.last_updated is None:
+            # Legacy rows written before the `last_updated` field existed
+            # never decay. Count them so a persistently-stale table is
+            # visible to operators.
+            legacy_no_timestamp += 1
             continue
         age_days = (now - w.last_updated).total_seconds() / 86400.0
         factor = 0.5 ** (age_days / half_life_days)
@@ -206,6 +211,13 @@ def decay_weights(now: datetime, half_life_days: float = DECAY_HALF_LIFE_DAYS) -
         key = d.get("_key") or w.signal_name
         kv_update("signal_weights", key, json.loads(w.model_dump_json()))
         touched += 1
+    if legacy_no_timestamp:
+        print(
+            f"anchor: {legacy_no_timestamp} signal_weights row(s) have no "
+            "`last_updated` and will not decay; run `anchor feedback` on "
+            "the corresponding signal once to backfill.",
+            file=sys.stderr,
+        )
     return touched
 
 
@@ -214,6 +226,14 @@ def bump_appearance(signals: list[str], now: datetime | None = None) -> None:
 
     Creates a weight row at 1.0 for unseen signals so `anchor learned` can
     show "we've watched this N times but never confirmed/denied it".
+
+    **Ordering invariant**: callers that also need the current weights
+    (e.g. `agent.compare`) MUST call `get_weights()` BEFORE `bump_appearance`.
+    `get_weights` triggers `_maybe_decay_weights`, which writes new
+    `weight` values; we want those decayed values reflected in any
+    downstream ranking, not overwritten by a stale snapshot. The current
+    code in `agent.compare` already does this; do not reorder without
+    threading the weights dict through both functions.
 
     Implementation note: pulls every existing weight in a single ``kv_all``
     call, then issues at most one write per signal. The old per-signal
