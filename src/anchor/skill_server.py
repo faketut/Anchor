@@ -16,13 +16,14 @@ editing `servers[0].url` to your ECS public address) to:
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime
 from typing import Any
 
 try:  # pragma: no cover  — optional dependency
     from fastapi import Depends, FastAPI, HTTPException, Query
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, Field, field_validator
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
         "Skill server requires the 'skill' extra. Install with:\n"
@@ -30,6 +31,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 from . import agent
+from ._time import ensure_aware
 from .memory import recall_similar_drifts
 from .models import Outcome, Scope
 
@@ -37,19 +39,23 @@ from .models import Outcome, Scope
 # ---- auth ------------------------------------------------------------------
 
 
-_EXPECTED_TOKEN = os.getenv("ANCHOR_SKILL_TOKEN", "")
 _bearer = HTTPBearer(auto_error=False)
 
 
 def _require_token(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
     """Reject if ANCHOR_SKILL_TOKEN is set and the request doesn't match it.
 
-    When the env var is empty we run open — convenient for `localhost` dev,
-    REQUIRED to be set on any internet-reachable host.
+    Read the env var per-request (so rotating the secret doesn't require a
+    restart) and compare with `secrets.compare_digest` to close the timing
+    side channel. When the env var is empty we run open — convenient for
+    `localhost` dev, REQUIRED to be set on any internet-reachable host.
     """
-    if not _EXPECTED_TOKEN:
+    expected = os.getenv("ANCHOR_SKILL_TOKEN", "")
+    if not expected:
         return
-    if creds is None or creds.scheme.lower() != "bearer" or creds.credentials != _EXPECTED_TOKEN:
+    if creds is None or creds.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+    if not secrets.compare_digest(creds.credentials, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
 
 
@@ -64,6 +70,11 @@ class CaptureRequest(BaseModel):
     sourcetypes: list[str] = Field(default_factory=list)
     metrics: list[str] | None = None
 
+    @field_validator("start", "end")
+    @classmethod
+    def _aware(cls, v: datetime) -> datetime:
+        return ensure_aware(v)
+
 
 class CompareRequest(BaseModel):
     anchor_id: str | None = None
@@ -74,6 +85,11 @@ class CompareRequest(BaseModel):
     provider: str | None = None
     deep: bool = False
     max_steps: int | None = None
+
+    @field_validator("start", "end")
+    @classmethod
+    def _aware(cls, v: datetime) -> datetime:
+        return ensure_aware(v)
 
 
 class RecallRequest(BaseModel):
@@ -99,18 +115,8 @@ app = FastAPI(
 
 
 def _compare_to_dict(cr) -> dict[str, Any]:
-    return {
-        "anchor": cr.anchor.model_dump(mode="json"),
-        "drift": cr.drift.model_dump(mode="json"),
-        "summary": cr.summary,
-        "hypothesis": cr.hypothesis,
-        "drill_in_spl": cr.drill_in_spl,
-        "top_diffs": [d.model_dump(mode="json") for d in cr.top_diffs],
-        "recalled": [
-            {"drift": d.model_dump(mode="json"), "similarity": round(sim, 3)}
-            for d, sim in cr.recalled
-        ],
-    }
+    """Back-compat thin wrapper; new code should call ``cr.to_dict()`` directly."""
+    return cr.to_dict()
 
 
 @app.get("/healthz", tags=["meta"])
@@ -141,21 +147,24 @@ def compare(req: CompareRequest) -> dict:
             focus=req.focus, metric_fields=req.metrics,
             provider=req.provider, max_steps=req.max_steps,
         )
-        out = _compare_to_dict(base)
+        out = base.to_dict()
         out["investigation"] = invest.model_dump(mode="json")
         return out
     cr = agent.compare(
         req.anchor_id, req.start, req.end,
         focus=req.focus, metric_fields=req.metrics, provider=req.provider,
     )
-    return _compare_to_dict(cr)
+    return cr.to_dict()
 
 
 @app.post("/recall", dependencies=[Depends(_require_token)])
 def recall(req: RecallRequest) -> list[dict]:
     rows = recall_similar_drifts(req.signals, k=req.k, min_similarity=req.min_similarity)
     return [
-        {"drift": d.model_dump(mode="json"), "similarity": round(sim, 3)}
+        {
+            "drift": d.model_dump(mode="json", exclude={"signal_embedding"}),
+            "similarity": round(sim, 3),
+        }
         for d, sim in rows
     ]
 
@@ -163,7 +172,7 @@ def recall(req: RecallRequest) -> list[dict]:
 @app.post("/feedback", dependencies=[Depends(_require_token)])
 def feedback(req: FeedbackRequest) -> dict:
     updated = agent.submit_feedback(req.drift_id, req.outcome, req.reason)
-    return updated.model_dump(mode="json")
+    return updated.model_dump(mode="json", exclude={"signal_embedding"})
 
 
 @app.get("/history", dependencies=[Depends(_require_token)])
@@ -172,7 +181,7 @@ def history(
     unresolved_only: bool = Query(False),
 ) -> list[dict]:
     rows = agent.list_history(unresolved_only=unresolved_only, limit=limit)
-    return [r.model_dump(mode="json") for r in rows]
+    return [r.model_dump(mode="json", exclude={"signal_embedding"}) for r in rows]
 
 
 @app.get("/learned", dependencies=[Depends(_require_token)])

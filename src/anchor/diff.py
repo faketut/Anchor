@@ -142,7 +142,9 @@ def _short(template: str, n: int = 32) -> str:
     the same signal name; now we append a 6-char MD5 suffix so each template
     gets a unique id.
     """
-    suffix = hashlib.md5(template.encode("utf-8", errors="replace")).hexdigest()[:6]
+    suffix = hashlib.md5(
+        template.encode("utf-8", errors="replace"), usedforsecurity=False
+    ).hexdigest()[:6]
     head = template[:n] if len(template) <= n else template[:n] + "..."
     return f"{head}#{suffix}"
 

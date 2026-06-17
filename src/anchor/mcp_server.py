@@ -47,6 +47,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 from . import agent
+from ._time import ensure_aware
 from .memory import recall_similar_drifts
 from .models import Scope
 
@@ -188,7 +189,7 @@ _TOOLS: list[dict[str, Any]] = [
 
 
 def _iso(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return ensure_aware(datetime.fromisoformat(s.replace("Z", "+00:00")))
 
 
 def _call(name: str, args: dict[str, Any]) -> Any:
@@ -223,7 +224,7 @@ def _call(name: str, args: dict[str, Any]) -> Any:
             metric_fields=args.get("metrics") or None,
             provider=args.get("provider"),
         )
-        return _compare_to_json(cr)
+        return cr.to_dict()
 
     if name == "anchor.deep_compare":
         base, invest = agent.deep_compare(
@@ -235,7 +236,7 @@ def _call(name: str, args: dict[str, Any]) -> Any:
             provider=args.get("provider"),
             max_steps=args.get("max_steps"),
         )
-        out = _compare_to_json(base)
+        out = base.to_dict()
         out["investigation"] = invest.model_dump(mode="json")
         return out
 
@@ -247,7 +248,7 @@ def _call(name: str, args: dict[str, Any]) -> Any:
         )
         return [
             {
-                "drift": d.model_dump(mode="json"),
+                "drift": d.model_dump(mode="json", exclude={"signal_embedding"}),
                 "similarity": round(sim, 3),
             }
             for d, sim in rows
@@ -266,27 +267,12 @@ def _call(name: str, args: dict[str, Any]) -> Any:
             unresolved_only=bool(args.get("unresolved_only", False)),
             limit=int(args.get("limit", 20)),
         )
-        return [r.model_dump(mode="json") for r in rows]
+        return [r.model_dump(mode="json", exclude={"signal_embedding"}) for r in rows]
 
     if name == "anchor.learned_signals":
         return [w.model_dump(mode="json") for w in agent.learned_signals()]
 
     raise ValueError(f"Unknown tool '{name}'")
-
-
-def _compare_to_json(cr) -> dict[str, Any]:
-    return {
-        "anchor": cr.anchor.model_dump(mode="json"),
-        "drift": cr.drift.model_dump(mode="json"),
-        "summary": cr.summary,
-        "hypothesis": cr.hypothesis,
-        "drill_in_spl": cr.drill_in_spl,
-        "top_diffs": [d.model_dump(mode="json") for d in cr.top_diffs],
-        "recalled": [
-            {"drift": d.model_dump(mode="json"), "similarity": round(sim, 3)}
-            for d, sim in cr.recalled
-        ],
-    }
 
 
 # ---- server entrypoint -----------------------------------------------------

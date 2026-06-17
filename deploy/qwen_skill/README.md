@@ -78,6 +78,9 @@ back in chat.
 - [ ] ECS Security Group allows inbound 443 only from Qwen Cloud egress IPs
       (check Qwen docs for the current range)
 - [ ] Rate limit on `/compare` and `/anchors POST` (each runs a Splunk job)
+- [ ] `GET /healthz` is intentionally **unauthenticated** so load-balancer /
+      reverse-proxy probes work; allow it through the proxy but rate-limit it
+      and don't expose it externally if you can avoid it
 
 ## Why this matters for the hackathon
 

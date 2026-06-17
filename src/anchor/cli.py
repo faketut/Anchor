@@ -9,6 +9,7 @@ from rich.json import JSON
 from rich.table import Table
 
 from . import agent
+from ._time import ensure_aware
 from .memory import get_drift
 from .models import Scope
 
@@ -32,10 +33,12 @@ def _parse_window(start: str, end: str) -> tuple[datetime, datetime]:
 
     Splunk rejects equal or inverted time windows with a 400 from
     ``jobs/create``. Catch the mistake here so the user sees a friendly
-    message instead of a stack trace.
+    message instead of a stack trace. Naive datetimes are promoted to UTC
+    (with a stderr warning) so downstream comparisons against aware
+    timestamps don't TypeError.
     """
-    start_dt = _parse_dt(start)
-    end_dt = _parse_dt(end)
+    start_dt = ensure_aware(_parse_dt(start))
+    end_dt = ensure_aware(_parse_dt(end))
     if end_dt <= start_dt:
         raise click.BadParameter(
             f"--to ({end}) must be strictly after --from ({start}). "
@@ -56,14 +59,16 @@ def _resolve_anchor_id(prefix: str) -> str:
 
 
 def _resolve_drift_id(prefix: str) -> str:
-    matches = [d for d in agent.list_history(limit=500) if d.id.startswith(prefix)]
+    # Pull a wide history window so prefixes still resolve after `purge-drifts`
+    # leaves a sparse table; 5000 is the largest list_history accepts.
+    matches = [d for d in agent.list_history(limit=5000) if d.id.startswith(prefix)]
     if not matches:
-        # Fallback for older drifts that aren't in the most-recent 500: if the
-        # user gave a full UUID, look it up directly in KV.
-        if len(prefix) == 36:
-            direct = get_drift(prefix)
-            if direct is not None:
-                return direct.id
+        # Fallback: any prefix the user has might be a full UUID; try a
+        # direct KV get. (KV doesn't expose prefix queries, so we can't do
+        # better than "full id" here.)
+        direct = get_drift(prefix)
+        if direct is not None:
+            return direct.id
         raise click.BadParameter(f"No drift record matching id '{prefix}'")
     if len(matches) > 1:
         ids = ", ".join(m.id[:12] for m in matches)

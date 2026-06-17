@@ -41,6 +41,30 @@ class CompareResult(NamedTuple):
     # to avoid the shared-mutable-default footgun.
     recalled: tuple[tuple[DriftRecord, float], ...] = ()
 
+    def to_dict(self) -> dict:
+        """JSON-safe dict for HTTP / MCP responses.
+
+        Strips `signal_embedding` from recalled drifts — 1024 floats per
+        record is wasted bytes for the consumer and the planner can't use
+        them anyway.
+        """
+        exclude = {"signal_embedding"}
+        return {
+            "anchor": self.anchor.model_dump(mode="json"),
+            "drift": self.drift.model_dump(mode="json", exclude=exclude),
+            "summary": self.summary,
+            "hypothesis": self.hypothesis,
+            "drill_in_spl": self.drill_in_spl,
+            "top_diffs": [d.model_dump(mode="json") for d in self.top_diffs],
+            "recalled": [
+                {
+                    "drift": d.model_dump(mode="json", exclude=exclude),
+                    "similarity": round(sim, 3),
+                }
+                for d, sim in self.recalled
+            ],
+        }
+
 
 # ---- ANCHOR ----------------------------------------------------------------
 

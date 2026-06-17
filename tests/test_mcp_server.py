@@ -238,3 +238,21 @@ def test_iso_parses_z_suffix():
     dt = mcp_server._iso("2026-06-14T12:00:00Z")
     assert dt.tzinfo is not None
     assert dt.year == 2026 and dt.hour == 12
+
+
+def test_iso_promotes_naive_datetime_to_utc():
+    """B2: a naive ISO string must be silently promoted to UTC, not crash."""
+    dt = mcp_server._iso("2026-06-14T12:00:00")
+    assert dt.tzinfo is not None
+    assert dt.utcoffset().total_seconds() == 0
+
+
+def test_dispatch_recall_strips_signal_embedding(monkeypatch, fake_drift):
+    """B3: anchor.recall must not return 1024-dim embeddings to MCP clients."""
+    fake_drift.signal_embedding = [0.42] * 1024
+    monkeypatch.setattr(
+        mcp_server, "recall_similar_drifts",
+        lambda signals, k=3, min_similarity=0.15: [(fake_drift, 0.5)],
+    )
+    out = mcp_server._call("anchor.recall", {"signals": ["template:Foo"]})
+    assert "signal_embedding" not in out[0]["drift"]

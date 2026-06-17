@@ -115,12 +115,6 @@ def narrate(
             past_incidents=past_incidents,
             provider_label="gemini",
         )
-    if chosen == "splunk":
-        # Splunk-hosted LLM proxy isn't wired up yet; keep the code path out
-        # of the demo until we have a real endpoint to point at.
-        raise NotImplementedError(
-            "The 'splunk' LLM provider is not yet implemented. Use --llm qwen or gemini."
-        )
     raise ValueError(f"Unknown LLM provider: {chosen}")
 
 

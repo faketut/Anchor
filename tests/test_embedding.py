@@ -11,6 +11,15 @@ from anchor import embedding, memory
 from anchor.models import DiffEntry, DriftRecord, TimeRange
 
 
+@pytest.fixture(autouse=True)
+def _reset_embedding_client():
+    """Drop the cached OpenAI client so each test sees a fresh one built
+    against whatever CONFIG / `openai.OpenAI` patch is active."""
+    embedding.reset_client()
+    yield
+    embedding.reset_client()
+
+
 # ---- pure helpers ----------------------------------------------------------
 
 

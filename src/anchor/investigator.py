@@ -16,9 +16,11 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from . import memory
 from .agent import CompareResult
 from .config import CONFIG
 from .models import InvestigationResult, InvestigationStep
+from .splunk_client import run_search
 
 StepCallback = Callable[[InvestigationStep], None]
 
@@ -39,8 +41,11 @@ Strategy:
    `get_drift_details` to read its full record before relying on it.
 3. If you suspect a deploy/config change, call `run_spl` against relevant
    indexes (e.g. deploy_log, config_change, audit) within the compare window.
-4. Stop and finalize as soon as you have a defensible hypothesis. Do NOT
-   exceed 4-5 tool calls — prefer depth over breadth.
+4. Stop and finalize as soon as you have a defensible hypothesis. You have
+   up to 6 tool calls — prefer depth over breadth and stop early when
+   evidence converges.
+
+Tool observations are clipped at ~8 KB; if you need more, narrow the SPL.
 
 When you are done, respond with NO tool_calls and a single JSON object:
   {
@@ -162,7 +167,12 @@ TOOLS: list[dict[str, Any]] = [
 # ---- tool dispatch ---------------------------------------------------------
 
 
-_OBS_CHAR_LIMIT = 2000  # cap tool messages going back into context
+_OBS_CHAR_LIMIT = 8000  # cap tool messages going back into context
+
+# DriftRecord now optionally carries a 1024-dim signal_embedding. We never
+# want that in a tool observation — it blows the char limit and the planner
+# can't reason on raw float vectors anyway.
+_DRIFT_EXCLUDE = {"signal_embedding"}
 
 
 def _truncate(text: str, limit: int = _OBS_CHAR_LIMIT) -> str:
@@ -174,9 +184,7 @@ def _truncate(text: str, limit: int = _OBS_CHAR_LIMIT) -> str:
 def _dispatch(name: str, args: dict[str, Any]) -> str:
     """Execute a tool call, return a JSON string ready to feed back as a tool message."""
     if name == "recall_similar_drifts":
-        from .memory import recall_similar_drifts
-
-        results = recall_similar_drifts(
+        results = memory.recall_similar_drifts(
             args.get("signals", []) or [],
             k=int(args.get("k", 5)),
             min_similarity=float(args.get("min_similarity", 0.1)),
@@ -197,29 +205,31 @@ def _dispatch(name: str, args: dict[str, Any]) -> str:
         )
 
     if name == "get_drift_details":
-        from .memory import get_drift
-
-        drift = get_drift(args["drift_id"])
+        drift_id = args.get("drift_id")
+        if not drift_id:
+            return json.dumps({"error": "missing required arg 'drift_id'"})
+        drift = memory.get_drift(drift_id)
         if drift is None:
-            return json.dumps({"error": f"drift '{args['drift_id'][:12]}' not found"})
-        return json.dumps(drift.model_dump(mode="json"), default=str)
+            return json.dumps({"error": f"drift '{drift_id[:12]}' not found"})
+        # Strip the 1024-dim embedding — useless to the planner, eats budget.
+        return json.dumps(
+            drift.model_dump(mode="json", exclude=_DRIFT_EXCLUDE), default=str
+        )
 
     if name == "run_spl":
-        from .splunk_client import run_search
-
-        rows = run_search(
-            args["spl"],
-            args["earliest"],
-            args["latest"],
-            max_count=50,
-        )
+        spl = args.get("spl")
+        earliest = args.get("earliest")
+        latest = args.get("latest")
+        if not (spl and earliest and latest):
+            return json.dumps(
+                {"error": "run_spl requires 'spl', 'earliest', 'latest'"}
+            )
+        rows = run_search(spl, earliest, latest, max_count=50)
         return json.dumps({"row_count": len(rows), "rows": rows[:50]}, default=str)
 
     if name == "list_recent_drifts":
-        from .memory import list_drifts
-
         outcome = args.get("outcome") or None
-        recent = list_drifts(outcome=outcome, limit=int(args.get("limit", 10)))
+        recent = memory.list_drifts(outcome=outcome, limit=int(args.get("limit", 10)))
         return json.dumps(
             [
                 {

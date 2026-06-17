@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import sys
+from typing import Any
 
 from .config import CONFIG
 
@@ -25,27 +26,50 @@ from .config import CONFIG
 def _signals_to_text(signals: list[str]) -> str:
     """Render a signal set as a single embeddable string.
 
-    Sorting keeps embeddings stable across runs even if upstream ordering
-    shifts; joining with newlines is what DashScope examples use for
-    multi-line keyword inputs.
+    Bag-of-signals representation: order is discarded (sorted), duplicates
+    collapsed; joining with newlines is what DashScope examples use for
+    multi-line keyword inputs. Sorting also keeps embeddings stable across
+    runs even if upstream ordering shifts.
     """
     return "\n".join(sorted(set(signals)))
+
+
+# Module-level client cache: building OpenAI() instantiates a connection pool
+# and reads env each time, which adds visible latency when save_drift +
+# recall both embed inside one `anchor compare`. Mirror splunk_client._svc.
+_client: Any | None = None
+
+
+def _get_client() -> Any | None:
+    """Return a cached OpenAI client, or None if no API key is configured."""
+    global _client
+    if not CONFIG.qwen_api_key or not CONFIG.qwen_embed_model:
+        return None
+    if _client is None:
+        from openai import OpenAI
+
+        _client = OpenAI(
+            api_key=CONFIG.qwen_api_key,
+            base_url=CONFIG.qwen_base_url,
+            timeout=30.0,
+        )
+    return _client
+
+
+def reset_client() -> None:
+    """Drop the cached client; used by tests that swap CONFIG mid-run."""
+    global _client
+    _client = None
 
 
 def embed_signals(signals: list[str]) -> list[float] | None:
     """Embed a drift's signal set. Returns None on any failure or missing key."""
     if not signals:
         return None
-    if not CONFIG.qwen_api_key or not CONFIG.qwen_embed_model:
+    client = _get_client()
+    if client is None:
         return None
     try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=CONFIG.qwen_api_key,
-            base_url=CONFIG.qwen_base_url,
-            timeout=30.0,
-        )
         rsp = client.embeddings.create(
             model=CONFIG.qwen_embed_model,
             input=_signals_to_text(signals),

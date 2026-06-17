@@ -299,3 +299,37 @@ def test_truncate_caps_long_observations():
     assert out.startswith("x" * 100)
     assert "truncated" in out
     assert len(out) < 200
+
+
+def test_dispatch_get_drift_details_strips_signal_embedding(monkeypatch):
+    """B3: the 1024-dim embedding must never appear in a planner observation."""
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    fake_drift = DriftRecord(
+        id="cafebabe-0000-0000-0000-000000000000",
+        timestamp=now,
+        anchor_id="a1",
+        compare_window=TimeRange(start=now, end=now),
+        top_diffs=[
+            DiffEntry(
+                signal="template:x", kind="template",
+                anchor_val=0, current_val=1,
+                delta_pct=None, severity="HIGH",
+            )
+        ],
+        outcome="resolved",
+        signal_embedding=[0.123] * 1024,
+    )
+    monkeypatch.setattr("anchor.memory.get_drift", lambda _id: fake_drift)
+    raw = investigator._dispatch("get_drift_details", {"drift_id": "cafebabe"})
+    out = json.loads(raw)
+    assert "signal_embedding" not in out
+    assert out["outcome"] == "resolved"
+
+
+def test_dispatch_missing_required_args_returns_error():
+    """get_drift_details / run_spl with absent args must not KeyError."""
+    out = json.loads(investigator._dispatch("get_drift_details", {}))
+    assert "drift_id" in out["error"]
+
+    out = json.loads(investigator._dispatch("run_spl", {"spl": "x"}))
+    assert "earliest" in out["error"] or "latest" in out["error"]
