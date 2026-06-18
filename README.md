@@ -266,6 +266,10 @@ see [deploy/alibaba-cloud.md](deploy/alibaba-cloud.md).
 
 See [examples/demo_script.md](examples/demo_script.md) for the timed demo flow.
 
+Want the design rationale in long form? Read the
+**[Building Anchor blog series](docs/blog/README.md)** — six posts walking
+through every component from the on-call problem to the Alibaba Cloud deploy.
+
 ---
 
 ## License
