@@ -161,7 +161,7 @@ flowchart TD
 
     Weights --> NextCompare["Next compare:<br/>diff engine re-ranks severity"]
     History --> Review
-    Weights -. decay halfway → 1.0<br/>every 30 days idle .-> Weights
+    Weights -. "decay halfway toward 1.0<br/>every 30 days idle" .-> Weights
 ```
 
 ---
