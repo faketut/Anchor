@@ -46,32 +46,77 @@ deterministic core and an LLM only at the narration layer.
 
 ```mermaid
 flowchart TB
-    subgraph Laptop["User (laptop)"]
-        CLI["anchor CLI<br/>capture · compare · feedback<br/>history · learned · blind-spots"]
+    subgraph Clients["Clients"]
+        CLI["anchor CLI"]
+        MCP["anchor-mcp<br/>(Claude Desktop / Cursor)"]
+        Skill["Qwen Custom Skill<br/>(uvicorn skill_server)"]
     end
 
     subgraph Alibaba["Alibaba Cloud"]
         subgraph ECS["ECS instance"]
             Splunk["Splunk Enterprise<br/>(Docker)"]
-            KV[("Splunk KV Store<br/>anchors · drifts · weights")]
+            KV[("Splunk KV Store<br/>anchors · drift_history · signal_weights")]
             Splunk --- KV
         end
         OSS[("OSS bucket<br/>anchor-memory/*.json<br/>daily snapshots")]
     end
 
-    subgraph Qwen["Qwen Cloud (DashScope)"]
-        QwenModel["qwen-plus<br/>OpenAI-compatible"]
+    subgraph QwenCloud["Qwen Cloud (DashScope)"]
+        QwenChat["qwen-plus / qwen-max<br/>chat + function-calling"]
+        QwenEmb["text-embedding-v3<br/>(opt-in semantic recall)"]
     end
 
-    CLI -->|REST :8089<br/>SPL + KV CRUD| Splunk
-    KV -.->|nightly cron<br/>oss2 SDK| OSS
-    CLI -->|OpenAI chat completions| QwenModel
+    CLI   -->|REST :8089| Splunk
+    MCP   -->|REST :8089| Splunk
+    Skill -->|REST :8089| Splunk
+    KV    -.->|nightly cron · oss2 SDK| OSS
+    CLI   -->|OpenAI chat completions| QwenChat
+    MCP   -->|OpenAI chat completions| QwenChat
+    CLI   -.->|when ANCHOR_SEMANTIC_RECALL=1| QwenEmb
 ```
 
 > **MemoryAgent loop**: each `compare` reads `signal_weights` (learned ranking)
 > and `drift_history` (recalled past incidents) before calling the LLM, then
 > writes a new drift record. Each `feedback` updates `signal_weights`.
 > Weights silently decay toward 1.0 over ~30 days to forget stale opinions.
+
+## KV Store schema
+
+```mermaid
+erDiagram
+    ANCHORS ||--o{ DRIFT_HISTORY : compared_against
+    SIGNAL_WEIGHTS ||--o{ DRIFT_HISTORY : reranks
+
+    ANCHORS {
+        string id PK
+        string name
+        timestamp created_at
+        string created_by
+        object time_range
+        object scope
+        int version
+        object fingerprint
+    }
+    DRIFT_HISTORY {
+        string id PK
+        timestamp ts
+        string anchor_id FK
+        object compare_window
+        array top_diffs
+        string agent_hypothesis
+        string engineer_confirmed_reason
+        string outcome
+        string suggested_spl
+        array signal_embedding
+    }
+    SIGNAL_WEIGHTS {
+        string signal_name PK
+        float weight
+        int confirmed_count
+        int false_positive_count
+        timestamp last_updated
+    }
+```
 
 ## Compare lifecycle (with memory)
 
@@ -95,6 +140,28 @@ sequenceDiagram
     CLI->>KV: save new drift record
     CLI->>KV: bump appearance counters
     CLI-->>User: rendered report + recalled incidents table
+```
+
+## Feedback loop (how Anchor learns)
+
+```mermaid
+flowchart TD
+    Review["Engineer reviews drift report"] --> Useful{"Useful?"}
+    Useful -->|confirmed| FbResolved["anchor feedback --outcome resolved"]
+    Useful -->|false alarm| FbFalse["anchor feedback --outcome false_positive"]
+    Useful -->|unclear| FbUnknown["outcome=unknown"]
+
+    FbResolved --> WUp["signal_weights:<br/>weight += 0.1, cap 3.0"]
+    FbFalse    --> WDown["signal_weights:<br/>weight -= 0.2, floor 0.1"]
+    FbUnknown  --> Blind["recorded; surfaces in<br/>anchor blind-spots if recurring"]
+
+    WUp   --> Weights[("signal_weights")]
+    WDown --> Weights
+    Blind --> History[("drift_history")]
+
+    Weights --> NextCompare["Next compare:<br/>diff engine re-ranks severity"]
+    History --> Review
+    Weights -. decay halfway → 1.0<br/>every 30 days idle .-> Weights
 ```
 
 ---

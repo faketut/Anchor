@@ -21,23 +21,27 @@ prefer step-by-step, the long-form walkthrough is below.
 
 ## Architecture
 
-```
-┌──────────────────┐   REST :8089    ┌────────────────────────────────────┐
-│  anchor CLI      │ ──────────────► │ Alibaba Cloud ECS                  │
-│  (your laptop)   │                 │   ├─ Splunk Enterprise (Docker)    │
-└──────────────────┘                 │   ├─ KV Store (anchors / drifts /  │
-                                     │   │   weights — persistent memory) │
-                                     │   └─ backup_kv_to_oss.py (cron)    │
-                                     └───────────┬────────────────────────┘
-                                                 │ oss2 SDK (HTTPS)
-                                                 ▼
-                                     ┌────────────────────────────────────┐
-                                     │ Alibaba Cloud OSS                  │
-                                     │   └─ anchor-memory/*.json snapshots│
-                                     └────────────────────────────────────┘
+```mermaid
+flowchart LR
+    CLI["anchor CLI<br/>(your laptop)"]
 
-                anchor CLI ─► narrator.py ─► Qwen Cloud (DashScope)
-                                              openai-compatible API
+    subgraph ECS["Alibaba Cloud ECS (Singapore / HK)"]
+        Splunk["Splunk Enterprise<br/>(Docker)"]
+        KV["KV Store<br/>anchors · drift_history · signal_weights"]
+        Backup["backup_kv_to_oss.py<br/>(daily cron)"]
+        Splunk --- KV
+        KV --> Backup
+    end
+
+    subgraph OSS["Alibaba Cloud OSS"]
+        Snap["anchor-memory/*.json<br/>versioned snapshots"]
+    end
+
+    Qwen["Qwen Cloud · DashScope<br/>(OpenAI-compatible API)"]
+
+    CLI -- "REST :8089" --> Splunk
+    Backup -- "oss2 SDK · HTTPS" --> Snap
+    CLI -- "narrator.py · planner" --> Qwen
 ```
 
 ## 1. Provision ECS
