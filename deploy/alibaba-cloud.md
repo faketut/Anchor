@@ -5,6 +5,20 @@ Following these steps satisfies the Qwen Cloud hackathon's
 **"backend running on Alibaba Cloud"** requirement and demonstrates active
 use of Alibaba Cloud services and APIs (ECS + OSS).
 
+## TL;DR (3 commands)
+
+After provisioning ECS + opening ports 22/8089 in the console:
+
+```bash
+# on the ECS host, as root
+curl -fsSL https://raw.githubusercontent.com/faketut/Anchor/main/deploy/setup_ecs.sh | bash
+nano /opt/anchor/.env   # fill in SPLUNK_PASSWORD, QWEN_API_KEY, OSS_* creds
+bash /opt/anchor/deploy/verify_setup.sh
+```
+
+The script is idempotent — safe to re-run after editing `.env`. If you
+prefer step-by-step, the long-form walkthrough is below.
+
 ## Architecture
 
 ```
