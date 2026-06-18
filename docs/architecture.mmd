@@ -3,23 +3,30 @@
 %% If you change one, change the other — and re-render to docs/architecture.png:
 %%   mmdc -i docs/architecture.mmd -o docs/architecture.png -t default -b white --width 1600 --scale 2
 flowchart TB
-    subgraph Laptop["User (laptop)"]
-        CLI["anchor CLI<br/>capture · compare · feedback<br/>history · learned · blind-spots"]
+    subgraph Clients["Clients"]
+        CLI["anchor CLI"]
+        MCP["anchor-mcp<br/>(Claude Desktop / Cursor)"]
+        Skill["Qwen Custom Skill<br/>(uvicorn skill_server)"]
     end
 
     subgraph Alibaba["Alibaba Cloud"]
         subgraph ECS["ECS instance"]
             Splunk["Splunk Enterprise<br/>(Docker)"]
-            KV[("Splunk KV Store<br/>anchors · drifts · weights")]
+            KV[("Splunk KV Store<br/>anchors · drift_history · signal_weights")]
             Splunk --- KV
         end
         OSS[("OSS bucket<br/>anchor-memory/*.json<br/>daily snapshots")]
     end
 
-    subgraph Qwen["Qwen Cloud (DashScope)"]
-        QwenModel["qwen-plus<br/>OpenAI-compatible"]
+    subgraph QwenCloud["Qwen Cloud (DashScope)"]
+        QwenChat["qwen-plus / qwen-max<br/>chat + function-calling"]
+        QwenEmb["text-embedding-v3<br/>(opt-in semantic recall)"]
     end
 
-    CLI -->|REST :8089<br/>SPL + KV CRUD| Splunk
-    KV -.->|nightly cron<br/>oss2 SDK| OSS
-    CLI -->|OpenAI chat completions| QwenModel
+    CLI   -->|REST :8089| Splunk
+    MCP   -->|REST :8089| Splunk
+    Skill -->|REST :8089| Splunk
+    KV    -.->|nightly cron · oss2 SDK| OSS
+    CLI   -->|OpenAI chat completions| QwenChat
+    MCP   -->|OpenAI chat completions| QwenChat
+    CLI   -.->|when ANCHOR_SEMANTIC_RECALL=1| QwenEmb
